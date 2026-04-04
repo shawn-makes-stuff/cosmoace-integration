@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ACE Control Panel</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Roboto, sans-serif;
+      background: #0f1115;
+      color: #e9edf2;
+    }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 18px; }
+    h1 { margin: 0 0 8px; font-size: 24px; }
+    .muted { color: #9ca6b3; font-size: 13px; }
+    .grid {
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+    }
+    .card {
+      background: #171a21;
+      border: 1px solid #2a303a;
+      border-radius: 12px;
+      padding: 12px;
+    }
+    .card h2 { margin: 0 0 8px; font-size: 16px; }
+    .row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+    input, select, button {
+      border: 1px solid #37414f;
+      background: #0f131a;
+      color: #e9edf2;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 13px;
+    }
+    input { min-width: 90px; }
+    button {
+      cursor: pointer;
+      background: #1d3959;
+      border-color: #28507d;
+    }
+    button.secondary {
+      background: #223124;
+      border-color: #3d5d40;
+    }
+    button.warn {
+      background: #513125;
+      border-color: #7f503f;
+    }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #0d1016;
+      border: 1px solid #263040;
+      border-radius: 8px;
+      padding: 10px;
+      min-height: 120px;
+      max-height: 300px;
+      overflow: auto;
+      font-size: 12px;
+      margin: 0;
+    }
+    .ok { color: #6dd28f; }
+    .bad { color: #ff8b8b; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>ACE Control Panel</h1>
+    <div class="muted">Standalone ACE control UI for CosmOS. Use it to feed, retract, dry, and probe live status.</div>
+    <div id="health" class="muted" style="margin-top:6px">Connecting...</div>
+
+    <div class="grid">
+      <section class="card">
+        <h2>Slot Control</h2>
+        <div class="row">
+          <label for="feedMm">Distance (mm)</label>
+          <input id="feedMm" type="number" value="90" />
+        </div>
+        <div class="row">
+          <button onclick="slotCmd(1,'feed')">Feed S1</button>
+          <button class="secondary" onclick="slotCmd(1,'retract')">Retract S1</button>
+        </div>
+        <div class="row">
+          <button onclick="slotCmd(2,'feed')">Feed S2</button>
+          <button class="secondary" onclick="slotCmd(2,'retract')">Retract S2</button>
+        </div>
+        <div class="row">
+          <button onclick="slotCmd(3,'feed')">Feed S3</button>
+          <button class="secondary" onclick="slotCmd(3,'retract')">Retract S3</button>
+        </div>
+        <div class="row">
+          <button onclick="slotCmd(4,'feed')">Feed S4</button>
+          <button class="secondary" onclick="slotCmd(4,'retract')">Retract S4</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Drying</h2>
+        <div class="row">
+          <label for="dryTemp">Temp (C)</label>
+          <input id="dryTemp" type="number" value="45" />
+        </div>
+        <div class="row">
+          <label for="dryMin">Minutes</label>
+          <input id="dryMin" type="number" value="240" />
+        </div>
+        <div class="row">
+          <button onclick="dryStart()">Dry Start</button>
+          <button class="warn" onclick="dryStop()">Dry Stop</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Serial / Probe</h2>
+        <div class="row">
+          <label>Port</label>
+          <input id="serialPort" value="auto" />
+          <label>Baud</label>
+          <input id="serialBaud" type="number" value="115200" />
+        </div>
+        <div class="row">
+          <button onclick="setSerial()">Set Serial</button>
+          <button class="secondary" onclick="refreshAceStatus()">Refresh ACE Status</button>
+        </div>
+        <div class="row">
+          <button class="secondary" onclick="aceGetInfo()">Get ACE Info</button>
+        </div>
+      </section>
+
+      <section class="card" style="grid-column: 1 / -1;">
+        <h2>Live Status</h2>
+        <pre id="statusBox"></pre>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const statusBox = document.getElementById('statusBox');
+    const health = document.getElementById('health');
+
+    function j(v) { return JSON.stringify(v, null, 2); }
+
+    async function api(path, method = 'GET', body = null) {
+      const opts = { method, headers: {} };
+      if (body !== null) {
+        opts.headers['Content-Type'] = 'application/json';
+        opts.body = JSON.stringify(body);
+      }
+      const res = await fetch(path, opts);
+      const txt = await res.text();
+      let data = null;
+      try { data = JSON.parse(txt); } catch (_) { data = { ok: false, raw: txt }; }
+      if (!res.ok) throw new Error((data && data.error) ? data.error : `HTTP ${res.status}`);
+      return data;
+    }
+
+    async function refreshStatus() {
+      try {
+        const data = await api('/status');
+        health.innerHTML = '<span class="ok">Connected</span> to ACE addon API';
+        statusBox.textContent = j(data.status);
+      } catch (err) {
+        health.innerHTML = `<span class="bad">Disconnected:</span> ${String(err.message || err)}`;
+      }
+    }
+
+    async function sendCommand(payload) {
+      try {
+        const data = await api('/command', 'POST', payload);
+        await refreshStatus();
+        return data;
+      } catch (err) {
+        await refreshStatus();
+        alert(`Command failed: ${String(err.message || err)}`);
+        return null;
+      }
+    }
+
+    async function slotCmd(slot, cmd) {
+      const mm = parseInt(document.getElementById('feedMm').value || '90', 10);
+      await sendCommand({ cmd, slot, mm });
+    }
+
+    async function dryStart() {
+      const temp_c = parseInt(document.getElementById('dryTemp').value || '45', 10);
+      const minutes = parseInt(document.getElementById('dryMin').value || '240', 10);
+      await sendCommand({ cmd: 'dry_start', temp_c, minutes });
+    }
+
+    async function dryStop() {
+      await sendCommand({ cmd: 'dry_stop' });
+    }
+
+    async function setSerial() {
+      const port = document.getElementById('serialPort').value || 'auto';
+      const baudrate = parseInt(document.getElementById('serialBaud').value || '115200', 10);
+      await sendCommand({ cmd: 'set_serial', port, baudrate });
+    }
+
+    async function refreshAceStatus() {
+      await sendCommand({ cmd: 'status_refresh' });
+    }
+
+    async function aceGetInfo() {
+      await sendCommand({ cmd: 'raw_method', method: 'get_info' });
+    }
+
+    window.slotCmd = slotCmd;
+    window.dryStart = dryStart;
+    window.dryStop = dryStop;
+    window.setSerial = setSerial;
+    window.refreshAceStatus = refreshAceStatus;
+    window.aceGetInfo = aceGetInfo;
+
+    refreshStatus();
+    setInterval(refreshStatus, 3000);
+  </script>
+</body>
+</html>

@@ -2,20 +2,20 @@
 
 Standalone Anycubic ACE Pro add-on package for OpenCentauri CosmOS.
 
-This repository is intentionally independent from the full firmware source tree.
-It installs on top of an already-running CosmOS printer and does not require a
-firmware rebuild.
+This package installs on top of an already-running CosmOS printer. It does not
+require a firmware rebuild.
 
 ## What It Installs
 
-- ACE Klipper extra: `/etc/klipper/ace-addon/ace.py`
-- Writable Klippy runtime copy: `/etc/klipper/klippy-ace`
-- ACE macro/config file: `/etc/klipper/config/ace-user.cfg`
-- `printer.cfg` include block for `ace-user.cfg`
+- ACE service script: `/etc/init.d/ace-addon`
+- ACE runtime files: `/user-resource/ace-addon/`
+- ACE config: `/user-resource/ace-addon/ace-addon.conf`
+- ACE control panel: `/user-resource/ace-addon/ace-panel.html`
+- Boot symlinks for the addon service
 
-## Install (USB + SSH)
+## Install
 
-1. Copy this folder to a USB drive.
+1. Copy this repository to a USB drive.
 2. SSH into the printer as `root`.
 3. Run:
 
@@ -25,29 +25,28 @@ chmod +x install.sh uninstall.sh create-package.sh
 ./install.sh
 ```
 
-Then set:
+After install, the addon should be available at:
 
-- File: `/etc/klipper/config/ace-user.cfg`
-- Section: `[ace]`
-- Key: `enabled: True`
+- `http://<printer-ip>:8091/panel`
 
-Restart services:
+Default configuration is stored here:
+
+- `/user-resource/ace-addon/ace-addon.conf`
+
+If you need to change the ACE serial port or tuning values, edit that file and
+restart the service:
 
 ```sh
-service klipper restart
-service moonraker restart
+service ace-addon restart
 ```
 
-## Panel Macros (Visible)
+## Controls
 
-- `ACE_PANEL_FEED_SLOT`
-- `ACE_PANEL_RETRACT_SLOT`
-- `ACE_PANEL_DRY_START`
-- `ACE_PANEL_DRY_STOP`
+The panel exposes:
 
-Troubleshooting macro is available but hidden by default:
-
-- `_ACE_PANEL_CONNECTION` (prints `ACE CONNECTED` / `ACE DISCONNECTED`)
+- Feed / retract for slots 1-4
+- Dry start / dry stop
+- Serial auto-detect and health/status probes
 
 ## Uninstall
 
@@ -55,10 +54,6 @@ Troubleshooting macro is available but hidden by default:
 cd /var/volatile/tmp/usb/sda1/CosmoACE-Integration
 ./uninstall.sh
 ```
-
-Uninstall restores the original Klipper init script from:
-
-- `/etc/init.d/klipper.ace-addon.bak`
 
 ## Package For Release
 

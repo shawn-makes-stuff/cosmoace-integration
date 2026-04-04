@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 DIST_DIR="${SCRIPT_DIR}/dist"
 STAMP=$(date +%Y%m%d-%H%M%S)
 PKG="cosmoace-integration-${STAMP}.tar.gz"
@@ -12,6 +12,9 @@ tar -C "${SCRIPT_DIR}" -czf "${DIST_DIR}/${PKG}" \
     install.sh \
     uninstall.sh \
     README.md \
-    files
+    files/ace-addon.py \
+    files/ace-addon.conf \
+    files/ace-panel.html \
+    files/ace-addon.init
 
 echo "Created ${DIST_DIR}/${PKG}"

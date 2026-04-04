@@ -1,0 +1,60 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          ace-addon
+# Required-Start:    $local_fs $network
+# Required-Stop:     $local_fs $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: Anycubic ACE addon service
+### END INIT INFO
+
+PYTHON=/usr/bin/python3
+DAEMON_SCRIPT=/user-resource/ace-addon/ace-addon.py
+DAEMON_CONFIG=/user-resource/ace-addon/ace-addon.conf
+NAME=ace-addon
+PIDFILE=/var/run/$NAME.pid
+
+start() {
+    echo "Starting $NAME..."
+    mkdir -p /user-resource/.tmp
+    start-stop-daemon --start --background --make-pidfile --pidfile "$PIDFILE" \
+        --exec "$PYTHON" -- "$DAEMON_SCRIPT" --config "$DAEMON_CONFIG"
+}
+
+stop() {
+    echo "Stopping $NAME..."
+    start-stop-daemon --stop --pidfile "$PIDFILE" --retry 10
+    rm -f "$PIDFILE"
+}
+
+status() {
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        echo "$NAME is running (PID $(cat "$PIDFILE"))"
+    else
+        echo "$NAME is not running"
+        return 1
+    fi
+}
+
+case "$1" in
+    start)
+        start
+        ;;
+    stop)
+        stop
+        ;;
+    restart|force-reload)
+        stop
+        sleep 1
+        start
+        ;;
+    status)
+        status
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
+
+exit 0

@@ -1,92 +1,50 @@
 #!/bin/sh
 set -eu
 
-ACE_ROOT="/etc/klipper/ace-addon"
-ACE_RUNTIME="/etc/klipper/klippy-ace"
-ACE_KLIPPY_DIR="${ACE_RUNTIME}/klippy"
-ACE_CONFIG="/etc/klipper/config/ace-user.cfg"
-PRINTER_CFG="/etc/klipper/config/printer.cfg"
-KLIPPER_INIT="/etc/init.d/klipper"
-KLIPPER_INIT_BAK="/etc/init.d/klipper.ace-addon.bak"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+ADDON_DIR="/user-resource/ace-addon"
+INIT_SCRIPT="/etc/init.d/ace-addon"
+
+required_files="files/ace-addon.py files/ace-addon.conf files/ace-panel.html files/ace-addon.init"
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "Run as root."
     exit 1
 fi
 
-if [ ! -f "${SCRIPT_DIR}/files/ace.py" ] || [ ! -f "${SCRIPT_DIR}/files/ace-user.cfg" ]; then
-    echo "Missing files/ace.py or files/ace-user.cfg in add-on directory."
-    exit 1
+for file in $required_files; do
+    if [ ! -f "${SCRIPT_DIR}/${file}" ]; then
+        echo "Missing ${file} in add-on directory."
+        exit 1
+    fi
+done
+
+mkdir -p "$ADDON_DIR"
+
+install -m 0755 "${SCRIPT_DIR}/files/ace-addon.py" "${ADDON_DIR}/ace-addon.py"
+install -m 0755 "${SCRIPT_DIR}/files/ace-addon.init" "$INIT_SCRIPT"
+install -m 0644 "${SCRIPT_DIR}/files/ace-panel.html" "${ADDON_DIR}/ace-panel.html"
+
+if [ ! -f "${ADDON_DIR}/ace-addon.conf" ]; then
+    install -m 0644 "${SCRIPT_DIR}/files/ace-addon.conf" "${ADDON_DIR}/ace-addon.conf"
 fi
 
-if [ ! -f "$KLIPPER_INIT" ]; then
-    echo "Missing $KLIPPER_INIT"
-    exit 1
-fi
+for rcdir in /etc/rc0.d /etc/rc1.d /etc/rc2.d /etc/rc5.d /etc/rc6.d; do
+    mkdir -p "$rcdir"
+done
 
-if [ ! -f "/usr/share/klipper/klippy/klippy.py" ]; then
-    echo "Missing /usr/share/klipper/klippy/klippy.py"
-    exit 1
-fi
-
-mkdir -p "$ACE_ROOT"
-cp -f "${SCRIPT_DIR}/files/ace.py" "$ACE_ROOT/ace.py"
-
-# Build writable runtime copy of Klippy tree, then inject ACE extra.
-rm -rf "$ACE_RUNTIME"
-mkdir -p "$ACE_RUNTIME"
-cp -a /usr/share/klipper/klippy "$ACE_RUNTIME/"
-cp -f "$ACE_ROOT/ace.py" "$ACE_KLIPPY_DIR/extras/ace.py"
-# Provide expected klippy source metadata paths for Moonraker.
-if [ -d /usr/share/klipper/config ]; then
-    ln -sfn /usr/share/klipper/config "$ACE_RUNTIME/config"
-else
-    mkdir -p "$ACE_RUNTIME/config"
-fi
-if [ -d /usr/share/klipper/docs ]; then
-    ln -sfn /usr/share/klipper/docs "$ACE_RUNTIME/docs"
-else
-    mkdir -p "$ACE_RUNTIME/docs"
-fi
-
-# Keep a one-time backup of the original init script.
-if [ ! -f "$KLIPPER_INIT_BAK" ]; then
-    cp -f "$KLIPPER_INIT" "$KLIPPER_INIT_BAK"
-fi
-
-# Point Klipper service to writable runtime tree.
-sed -i 's|/usr/share/klipper/klippy/klippy.py|/etc/klipper/klippy-ace/klippy/klippy.py|g' "$KLIPPER_INIT"
-sed -i 's|/etc/klipper/klippy-ace/klippy.py|/etc/klipper/klippy-ace/klippy/klippy.py|g' "$KLIPPER_INIT"
-
-# Install user-tunable ACE config if it does not exist yet.
-if [ ! -f "$ACE_CONFIG" ]; then
-    cp -f "${SCRIPT_DIR}/files/ace-user.cfg" "$ACE_CONFIG"
-fi
-
-# Merge ACE panel macros into existing config once.
-if ! grep -q "gcode_macro ACE_PANEL_FEED_SLOT" "$ACE_CONFIG"; then
-    awk '
-        /^# ACE panel controls for Mainsail\/Moonraker macro UI/ { copy=1 }
-        copy==1 { print }
-    ' "${SCRIPT_DIR}/files/ace-user.cfg" >> "$ACE_CONFIG"
-fi
-
-# Add include marker block to printer.cfg once.
-if ! grep -q "BEGIN ACE ADDON" "$PRINTER_CFG"; then
-    {
-        echo ""
-        echo "# BEGIN ACE ADDON"
-        echo "[include ace-user.cfg]"
-        echo "# END ACE ADDON"
-    } >> "$PRINTER_CFG"
-fi
+ln -sfn ../init.d/ace-addon /etc/rc2.d/S97ace-addon
+ln -sfn ../init.d/ace-addon /etc/rc5.d/S97ace-addon
+ln -sfn ../init.d/ace-addon /etc/rc0.d/K03ace-addon
+ln -sfn ../init.d/ace-addon /etc/rc1.d/K03ace-addon
+ln -sfn ../init.d/ace-addon /etc/rc6.d/K03ace-addon
 
 if command -v service >/dev/null 2>&1; then
-    service klipper restart || true
-    service moonraker restart || true
+    service ace-addon restart || service ace-addon start || true
 fi
 
 echo "ACE add-on installed."
-echo "Edit $ACE_CONFIG and set [ace] enabled: True when ready."
-echo "Then restart klipper: service klipper restart"
+echo "Configuration:"
+echo "  $ADDON_DIR/ace-addon.conf"
+echo "Panel:"
+echo "  http://<printer-ip>:8091/panel"
