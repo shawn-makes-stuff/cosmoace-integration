@@ -33,7 +33,9 @@ Feeds the ACE and extruder together in chunks so the filament is positively
 pulled through the hotend instead of relying on the extruder alone.
 
 ### `ACE_PURGE LENGTH=<mm> SPEED=<mm/s>`
-Extrudes a purge amount at the tray after the filament is loaded.
+Extrudes a purge amount at the tray after the filament is loaded. Large purge
+lengths are automatically split into smaller chunks so they stay below
+Klipper's `max_extrude_only_distance` limit.
 
 ### `ACE_WIPE`
 Runs the tray wipe motion only using `M729`.
