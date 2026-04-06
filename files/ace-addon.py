@@ -392,6 +392,15 @@ class AceTransport:
                 parsed = response.get("response")
                 if not isinstance(parsed, dict):
                     return {"ok": False, "error": "rpc response is not a JSON object"}
+                ace_error = AceController._rpc_code_error(method, parsed)
+                if ace_error:
+                    self.last_error = ace_error
+                    return {
+                        "ok": False,
+                        "error": ace_error,
+                        "request": req,
+                        "response": parsed,
+                    }
                 self.last_error = None
                 return {"ok": True, "request": req, "response": parsed}
             except Exception as exc:
@@ -620,33 +629,90 @@ class AceController:
             record["assumed_success"] = True
         self.last_command = record
 
+    @staticmethod
+    def _rpc_code_error(method: str, parsed: Dict[str, Any]) -> Optional[str]:
+        if "code" not in parsed:
+            return None
+        code = parsed.get("code")
+        try:
+            code_int = int(code)
+        except Exception:
+            code_int = None
+        if code_int == 0 or code in (0, "0"):
+            return None
+        msg = str(parsed.get("msg", "")).strip()
+        detail = msg or "unknown ACE error"
+        if code_int is not None:
+            return f"{method} failed with ACE code {code_int}: {detail}"
+        return f"{method} failed: {detail}"
+
+    def _get_ace_status(self, refresh: bool = True) -> Dict[str, Any]:
+        if not refresh and isinstance(self.last_ace_status, dict):
+            return {"ok": True, "status": self.last_ace_status, "cached": True}
+        result = self.transport.rpc_call("get_status")
+        if not result.get("ok", False):
+            return result
+        parsed = result.get("response")
+        if not isinstance(parsed, dict):
+            return {"ok": False, "error": "ACE status response is not a JSON object"}
+        payload = parsed.get("result")
+        if not isinstance(payload, dict):
+            return {"ok": False, "error": "ACE status response missing result"}
+        self.last_ace_status = payload
+        self.last_ace_status_unix = time.time()
+        return {"ok": True, "status": payload}
+
+    def _get_slot_status(self, slot: int, refresh: bool = True) -> Dict[str, Any]:
+        status_result = self._get_ace_status(refresh=refresh)
+        if not status_result.get("ok", False):
+            return status_result
+        status = status_result.get("status")
+        if not isinstance(status, dict):
+            return {"ok": False, "error": "ACE status payload is not a JSON object"}
+        slots = status.get("slots")
+        if not isinstance(slots, list) or not (0 <= slot < len(slots)):
+            return {"ok": False, "error": f"ACE slot index {slot} missing from status"}
+        slot_info = slots[slot]
+        if not isinstance(slot_info, dict):
+            return {"ok": False, "error": f"ACE slot index {slot} status is not a JSON object"}
+        slot_status = str(slot_info.get("status", "")).strip().lower()
+        return {
+            "ok": True,
+            "slot": slot + 1,
+            "index": slot,
+            "slot_status": slot_status,
+            "slot_info": slot_info,
+            "ace_status": status,
+        }
+
     def _wait_for_motion_complete(self, slot: int, timeout_s: float, poll_interval_s: float = 0.2) -> Dict[str, Any]:
         deadline = time.time() + max(0.5, timeout_s)
         last_status: Optional[Dict[str, Any]] = None
         last_error: Optional[str] = None
+        active_states = {"busy", "feeding", "unwinding", "shifting"}
         while time.time() < deadline:
-            status_result = self.transport.rpc_call("get_status")
+            status_result = self._get_ace_status(refresh=True)
             if status_result.get("ok", False):
-                parsed = status_result.get("response")
-                if isinstance(parsed, dict) and isinstance(parsed.get("result"), dict):
-                    result = parsed.get("result")
-                    if isinstance(result, dict):
-                        last_status = result
-                        self.last_ace_status = result
-                        self.last_ace_status_unix = time.time()
-                        overall_status = str(result.get("status", "")).strip().lower()
-                        action = str(result.get("action", "")).strip().lower()
-                        slots = result.get("slots")
-                        slot_status = ""
-                        if isinstance(slots, list) and 0 <= slot < len(slots):
-                            slot_entry = slots[slot]
-                            if isinstance(slot_entry, dict):
-                                slot_status = str(slot_entry.get("status", "")).strip().lower()
-                        if overall_status != "busy" and action != "unwinding" and slot_status != "unwinding":
-                            return {
-                                "ok": True,
-                                "status": result,
-                            }
+                result = status_result.get("status")
+                if isinstance(result, dict):
+                    last_status = result
+                    overall_status = str(result.get("status", "")).strip().lower()
+                    action = str(result.get("action", "")).strip().lower()
+                    slots = result.get("slots")
+                    slot_status = ""
+                    if isinstance(slots, list) and 0 <= slot < len(slots):
+                        slot_entry = slots[slot]
+                        if isinstance(slot_entry, dict):
+                            slot_status = str(slot_entry.get("status", "")).strip().lower()
+                    if (
+                        overall_status not in active_states
+                        and action not in active_states
+                        and slot_status not in active_states
+                    ):
+                        return {
+                            "ok": True,
+                            "status": result,
+                        }
             else:
                 last_error = str(status_result.get("error", "status refresh failed"))
             time.sleep(max(0.05, poll_interval_s))
@@ -706,6 +772,76 @@ class AceController:
             "last_sensor_result": last_result,
         }
 
+    def _confirm_sensor_state(
+        self,
+        sensor_name: str,
+        filament_detected: bool,
+        hold_s: float,
+        poll_interval_s: float = 0.05,
+    ) -> Dict[str, Any]:
+        initial = self._query_sensor_state(sensor_name)
+        if not initial.get("ok", False):
+            return initial
+        if bool(initial.get("filament_detected", False)) != filament_detected:
+            return {
+                "ok": False,
+                "error": f"sensor '{sensor_name}' is not {'triggered' if filament_detected else 'clear'} at confirmation start",
+                "sensor_name": sensor_name,
+                "sensor": initial,
+            }
+        if hold_s <= 0:
+            return {
+                "ok": True,
+                "sensor_name": sensor_name,
+                "filament_detected": filament_detected,
+                "sensor": initial,
+                "stable_for_s": 0.0,
+            }
+        deadline = time.time() + hold_s
+        last_result = initial
+        while time.time() < deadline:
+            time.sleep(max(0.02, poll_interval_s))
+            current = self._query_sensor_state(sensor_name)
+            if not current.get("ok", False):
+                return current
+            last_result = current
+            if bool(current.get("filament_detected", False)) != filament_detected:
+                return {
+                    "ok": False,
+                    "error": f"sensor '{sensor_name}' changed during confirmation window",
+                    "sensor_name": sensor_name,
+                    "sensor": current,
+                    "stable_for_s": max(0.0, hold_s - max(0.0, deadline - time.time())),
+                }
+        return {
+            "ok": True,
+            "sensor_name": sensor_name,
+            "filament_detected": filament_detected,
+            "sensor": last_result,
+            "stable_for_s": hold_s,
+        }
+
+    def _unwind_and_wait(self, slot: int, mm: float, speed: float, timeout_s: Optional[float] = None) -> Dict[str, Any]:
+        length = max(0, int(mm))
+        speed_int = max(1, int(speed))
+        timeout = timeout_s if timeout_s is not None else (float(length) / max(float(speed_int), 1.0)) + 5.0
+        result = self.transport.rpc_call(
+            "unwind_filament",
+            {"index": slot, "length": length, "speed": speed_int, "mode": 0},
+        )
+        if not result.get("ok", False):
+            return result
+        wait_result = self._wait_for_motion_complete(slot, timeout)
+        if not wait_result.get("ok", False):
+            return wait_result
+        return {
+            "ok": True,
+            "rpc_result": result,
+            "wait_result": wait_result,
+            "length": length,
+            "speed": speed_int,
+        }
+
     def _poll_loop(self) -> None:
         while not self._stop.is_set():
             if self.keepalive_enabled:
@@ -732,6 +868,17 @@ class AceController:
             mm = _int(payload, "mm", self.default_feed_mm)
             speed = _int(payload, "speed", self.feed_speed)
             result = self.transport.rpc_call("feed_filament", {"index": slot, "length": mm, "speed": speed})
+        elif cmd == "feed_wait":
+            if slot is None:
+                return {"ok": False, "error": "feed_wait requires slot 1..4 or index 0..3"}
+            mm = _int(payload, "mm", self.default_feed_mm)
+            speed = _int(payload, "speed", self.feed_speed)
+            timeout_s = _float(payload, "timeout_s", (float(mm) / max(float(speed), 1.0)) + 5.0)
+            result = self.transport.rpc_call("feed_filament", {"index": slot, "length": mm, "speed": speed})
+            if result.get("ok", False):
+                wait_result = self._wait_for_motion_complete(slot, timeout_s)
+                if not wait_result.get("ok", False):
+                    result = wait_result
         elif cmd == "retract":
             if slot is None:
                 return {"ok": False, "error": "retract requires slot 1..4 or index 0..3"}
@@ -762,6 +909,15 @@ class AceController:
             speed = _int(payload, "speed", self.feed_speed)
             sensor_name = str(payload.get("sensor") or self.sensor_name).strip() or self.sensor_name
             timeout_s = _float(payload, "timeout_s", (float(mm) / max(float(speed), 1.0)) + 10.0)
+            slot_status = self._get_slot_status(slot, refresh=True)
+            if not slot_status.get("ok", False):
+                return slot_status
+            if slot_status.get("slot_status") != "ready":
+                return {
+                    "ok": False,
+                    "error": f"ACE slot {slot + 1} is not ready (status={slot_status.get('slot_status') or 'unknown'})",
+                    "slot_status": slot_status,
+                }
             sensor_result = self._query_sensor_state(sensor_name)
             if sensor_result.get("ok", False) and sensor_result.get("filament_detected", False):
                 return {"ok": False, "error": f"sensor '{sensor_name}' is already triggered", "sensor": sensor_result}
@@ -774,7 +930,7 @@ class AceController:
                     "stop_feed_filament",
                 )
                 settle_result = self._wait_for_motion_complete(slot, 5.0)
-                if wait_result.get("ok", False) and stop_result.get("ok", False):
+                if wait_result.get("ok", False) and stop_result.get("ok", False) and settle_result.get("ok", False):
                     result = {
                         "ok": True,
                         "sensor_name": sensor_name,
@@ -787,12 +943,13 @@ class AceController:
                         result["warning"] = stop_result.get("warning")
                     if stop_result.get("assumed_success", False):
                         result["assumed_success"] = True
-                    if not settle_result.get("ok", False):
-                        result["settle_warning"] = settle_result.get("error")
                 else:
+                    error = wait_result.get("error", "sensor did not trigger")
+                    if wait_result.get("ok", False) and stop_result.get("ok", False):
+                        error = settle_result.get("error", "ACE feed did not settle after stop")
                     result = {
                         "ok": False,
-                        "error": wait_result.get("error", "sensor did not trigger") if not wait_result.get("ok", False) else stop_result.get("error", "stop failed"),
+                        "error": error,
                         "sensor_name": sensor_name,
                         "sensor": wait_result,
                         "stop_result": stop_result,
@@ -852,6 +1009,100 @@ class AceController:
                             "stop_result": stop_result,
                             "settle_result": settle_result,
                         }
+        elif cmd == "clear_hub":
+            if slot is None:
+                return {"ok": False, "error": "clear_hub requires slot 1..4 or index 0..3"}
+            base_mm = _float(payload, "mm", self.default_retract_mm)
+            step_mm = _float(payload, "step_mm", 10.0)
+            max_extra_mm = _float(payload, "max_extra_mm", 60.0)
+            speed = _float(payload, "speed", self.retract_speed)
+            sensor_name = str(payload.get("sensor") or self.sensor_name).strip() or self.sensor_name
+            settle_s = _float(payload, "settle_s", 0.25)
+            confirm_s = _float(payload, "confirm_s", 0.5)
+            if base_mm <= 0:
+                return {"ok": False, "error": "clear_hub requires mm>0"}
+            if step_mm <= 0:
+                return {"ok": False, "error": "clear_hub requires step_mm>0"}
+            if max_extra_mm < 0:
+                return {"ok": False, "error": "clear_hub requires max_extra_mm>=0"}
+            if speed <= 0:
+                return {"ok": False, "error": "clear_hub requires speed>0"}
+            if confirm_s < 0:
+                return {"ok": False, "error": "clear_hub requires confirm_s>=0"}
+
+            moves = []
+            first_move = self._unwind_and_wait(slot, base_mm, speed)
+            if not first_move.get("ok", False):
+                result = first_move
+            else:
+                moves.append({"length": first_move.get("length"), "kind": "base"})
+                if settle_s > 0:
+                    time.sleep(settle_s)
+                sensor_result = self._query_sensor_state(sensor_name)
+                if not sensor_result.get("ok", False):
+                    result = sensor_result
+                else:
+                    remaining = max_extra_mm
+                    total_extra = 0.0
+                    result = {}
+                    while True:
+                        if not bool(sensor_result.get("filament_detected", False)):
+                            confirm_result = self._confirm_sensor_state(sensor_name, False, confirm_s)
+                            if not confirm_result.get("ok", False):
+                                changed = str(confirm_result.get("error", "")).strip().lower() == (
+                                    f"sensor '{sensor_name}' changed during confirmation window"
+                                )
+                                if changed:
+                                    sensor_result = confirm_result.get("sensor", sensor_result)
+                                else:
+                                    result = confirm_result
+                                    break
+                            else:
+                                sensor_result = confirm_result.get("sensor", sensor_result)
+                                result = {
+                                    "ok": True,
+                                    "sensor_name": sensor_name,
+                                    "sensor": sensor_result,
+                                    "moves": moves,
+                                    "base_mm": base_mm,
+                                    "extra_mm": total_extra,
+                                    "max_extra_mm": max_extra_mm,
+                                    "confirm_s": confirm_s,
+                                }
+                                break
+                        if remaining <= 0:
+                            result = {
+                                "ok": False,
+                                "error": "sensor still triggered after hub clear retries",
+                                "sensor_name": sensor_name,
+                                "sensor": sensor_result,
+                                "moves": moves,
+                                "base_mm": base_mm,
+                                "extra_mm": total_extra,
+                                "max_extra_mm": max_extra_mm,
+                                "confirm_s": confirm_s,
+                            }
+                            break
+                        step = min(step_mm, remaining)
+                        step_move = self._unwind_and_wait(slot, step, speed)
+                        if not step_move.get("ok", False):
+                            result = {
+                                "ok": False,
+                                "error": step_move.get("error", "clear_hub extra retract failed"),
+                                "moves": moves,
+                                "sensor_name": sensor_name,
+                                "sensor": sensor_result,
+                            }
+                            break
+                        moves.append({"length": step_move.get("length"), "kind": "extra"})
+                        total_extra += step
+                        remaining -= step
+                        if settle_s > 0:
+                            time.sleep(settle_s)
+                        sensor_result = self._query_sensor_state(sensor_name)
+                        if not sensor_result.get("ok", False):
+                            result = sensor_result
+                            break
         elif cmd == "stop":
             if slot is None:
                 return {"ok": False, "error": "stop requires slot 1..4 or index 0..3"}
@@ -873,7 +1124,21 @@ class AceController:
         elif cmd == "dry_stop":
             result = self.transport.rpc_call("drying_stop")
         elif cmd == "status_refresh":
-            result = self.transport.rpc_call("get_status")
+            result = self._get_ace_status(refresh=True)
+        elif cmd == "slot_status":
+            if slot is None:
+                return {"ok": False, "error": "slot_status requires slot 1..4 or index 0..3"}
+            result = self._get_slot_status(slot, refresh=True)
+        elif cmd == "assert_slot_ready":
+            if slot is None:
+                return {"ok": False, "error": "assert_slot_ready requires slot 1..4 or index 0..3"}
+            result = self._get_slot_status(slot, refresh=True)
+            if result.get("ok", False) and result.get("slot_status") != "ready":
+                result = {
+                    "ok": False,
+                    "error": f"ACE slot {slot + 1} is not ready (status={result.get('slot_status') or 'unknown'})",
+                    "slot_status": result,
+                }
         elif cmd == "raw_method":
             method = str(payload.get("method", "")).strip()
             params = payload.get("params")
@@ -931,7 +1196,7 @@ def parse_config(path: str) -> configparser.ConfigParser:
                 "serial_port": "auto",
                 "baudrate": "115200",
                 "command_timeout_s": "1.0",
-                "rpc_timeout_s": "1.5",
+                "rpc_timeout_s": "2.5",
                 "read_idle_s": "0.08",
                 "read_max_bytes": "4096",
                 "feed_speed": "25",
@@ -1066,7 +1331,7 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="action")
 
     command_parser = subparsers.add_parser("command", help="Send one ACE command")
-    command_parser.add_argument("--cmd", required=True, help="feed|retract|retract_wait|feed_to_sensor|retract_to_sensor|stop|stop_unwind|dry_start|dry_stop|status_refresh|raw_method|set_serial")
+    command_parser.add_argument("--cmd", required=True, help="feed|feed_wait|retract|retract_wait|feed_to_sensor|retract_to_sensor|stop|stop_unwind|dry_start|dry_stop|status_refresh|slot_status|assert_slot_ready|raw_method|set_serial")
     command_parser.add_argument("--slot", type=int, default=None, help="ACE user slot 1..4")
     command_parser.add_argument("--mm", type=int, default=None)
     command_parser.add_argument("--speed", type=int, default=None)
