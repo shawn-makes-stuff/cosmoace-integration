@@ -7,6 +7,7 @@ import glob
 import json
 import logging
 import os
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -804,6 +805,7 @@ class AceController:
             speed = _int(payload, "speed", self.retract_speed)
             sensor_name = str(payload.get("sensor") or self.sensor_name).strip() or self.sensor_name
             timeout_s = _float(payload, "timeout_s", (float(mm) / max(float(speed), 1.0)) + 10.0)
+            settle_timeout_s = _float(payload, "settle_timeout_s", 5.0)
             sensor_result = self._query_sensor_state(sensor_name)
             if sensor_result.get("ok", False) and not sensor_result.get("filament_detected", False):
                 result = {
@@ -824,25 +826,31 @@ class AceController:
                         self.transport.rpc_call("stop_unwind_filament", {"index": slot}),
                         "stop_unwind_filament",
                     )
-                    if wait_result.get("ok", False) and stop_result.get("ok", False):
+                    settle_result = self._wait_for_motion_complete(slot, settle_timeout_s)
+                    if wait_result.get("ok", False) and stop_result.get("ok", False) and settle_result.get("ok", False):
                         result = {
                             "ok": True,
                             "sensor_name": sensor_name,
                             "filament_detected": False,
                             "sensor": wait_result,
                             "stop_result": stop_result,
+                            "settle_result": settle_result,
                         }
                         if stop_result.get("warning"):
                             result["warning"] = stop_result.get("warning")
                         if stop_result.get("assumed_success", False):
                             result["assumed_success"] = True
                     else:
+                        error = wait_result.get("error", "sensor did not clear")
+                        if wait_result.get("ok", False) and stop_result.get("ok", False):
+                            error = settle_result.get("error", "ACE unwind did not settle after stop")
                         result = {
                             "ok": False,
-                            "error": wait_result.get("error", "sensor did not clear"),
+                            "error": error,
                             "sensor_name": sensor_name,
                             "sensor": wait_result,
                             "stop_result": stop_result,
+                            "settle_result": settle_result,
                         }
         elif cmd == "stop":
             if slot is None:

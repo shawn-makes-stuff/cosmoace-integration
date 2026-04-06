@@ -15,15 +15,22 @@ NAME=ace-addon
 PIDFILE=/var/run/$NAME.pid
 
 start() {
+    if [ -f "$PIDFILE" ]; then
+        if kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+            echo "$NAME is already running (PID $(cat "$PIDFILE"))"
+            return 0
+        fi
+        rm -f "$PIDFILE"
+    fi
     echo "Starting $NAME..."
     mkdir -p /user-resource/.tmp
-    start-stop-daemon --start --background --make-pidfile --pidfile "$PIDFILE" \
-        --exec "$PYTHON" -- "$DAEMON_SCRIPT" --config "$DAEMON_CONFIG"
+    start-stop-daemon -S -b -m -p "$PIDFILE" \
+        -x "$PYTHON" -- "$DAEMON_SCRIPT" --config "$DAEMON_CONFIG"
 }
 
 stop() {
     echo "Stopping $NAME..."
-    start-stop-daemon --stop --pidfile "$PIDFILE" --retry 10
+    start-stop-daemon -K -p "$PIDFILE" -R 10 || true
     rm -f "$PIDFILE"
 }
 
@@ -31,6 +38,7 @@ status() {
     if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
         echo "$NAME is running (PID $(cat "$PIDFILE"))"
     else
+        [ -f "$PIDFILE" ] && rm -f "$PIDFILE"
         echo "$NAME is not running"
         return 1
     fi
