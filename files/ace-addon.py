@@ -689,26 +689,13 @@ class AceController:
         deadline = time.time() + max(0.5, timeout_s)
         last_status: Optional[Dict[str, Any]] = None
         last_error: Optional[str] = None
-        active_states = {"busy", "feeding", "unwinding", "shifting"}
         while time.time() < deadline:
             status_result = self._get_ace_status(refresh=True)
             if status_result.get("ok", False):
                 result = status_result.get("status")
                 if isinstance(result, dict):
                     last_status = result
-                    overall_status = str(result.get("status", "")).strip().lower()
-                    action = str(result.get("action", "")).strip().lower()
-                    slots = result.get("slots")
-                    slot_status = ""
-                    if isinstance(slots, list) and 0 <= slot < len(slots):
-                        slot_entry = slots[slot]
-                        if isinstance(slot_entry, dict):
-                            slot_status = str(slot_entry.get("status", "")).strip().lower()
-                    if (
-                        overall_status not in active_states
-                        and action not in active_states
-                        and slot_status not in active_states
-                    ):
+                    if not self._is_motion_active(result, slot):
                         return {
                             "ok": True,
                             "status": result,
@@ -722,6 +709,22 @@ class AceController:
             "last_status": last_status,
             "last_status_error": last_error,
         }
+
+    def _is_motion_active(self, status: Dict[str, Any], slot: int) -> bool:
+        active_states = {"busy", "feeding", "unwinding", "shifting"}
+        overall_status = str(status.get("status", "")).strip().lower()
+        action = str(status.get("action", "")).strip().lower()
+        slots = status.get("slots")
+        slot_status = ""
+        if isinstance(slots, list) and 0 <= slot < len(slots):
+            slot_entry = slots[slot]
+            if isinstance(slot_entry, dict):
+                slot_status = str(slot_entry.get("status", "")).strip().lower()
+        return (
+            overall_status in active_states
+            or action in active_states
+            or slot_status in active_states
+        )
 
     def _query_sensor_state(self, sensor_name: str, timeout_s: float = 3.0) -> Dict[str, Any]:
         object_name = f"filament_switch_sensor {sensor_name}"
@@ -821,6 +824,69 @@ class AceController:
             "stable_for_s": hold_s,
         }
 
+    def _wait_for_motion_and_sensor_state(
+        self,
+        slot: int,
+        sensor_name: str,
+        filament_detected: bool,
+        timeout_s: float,
+        confirm_s: float = 0.5,
+        poll_interval_s: float = 0.05,
+    ) -> Dict[str, Any]:
+        deadline = time.time() + max(0.2, timeout_s)
+        hold_required = max(0.0, confirm_s)
+        stable_since: Optional[float] = None
+        last_status: Optional[Dict[str, Any]] = None
+        last_status_error: Optional[str] = None
+        last_sensor_result: Optional[Dict[str, Any]] = None
+
+        while time.time() < deadline:
+            sensor_result = self._query_sensor_state(sensor_name)
+            if sensor_result.get("ok", False):
+                last_sensor_result = sensor_result
+            status_result = self._get_ace_status(refresh=True)
+            if status_result.get("ok", False):
+                status = status_result.get("status")
+                if isinstance(status, dict):
+                    last_status = status
+            else:
+                last_status_error = str(status_result.get("error", "status refresh failed"))
+
+            sensor_matches = bool(
+                sensor_result.get("ok", False)
+                and bool(sensor_result.get("filament_detected", False)) == filament_detected
+            )
+            motion_inactive = bool(isinstance(last_status, dict) and not self._is_motion_active(last_status, slot))
+
+            if sensor_matches and motion_inactive:
+                now = time.time()
+                if stable_since is None:
+                    stable_since = now
+                if (now - stable_since) >= hold_required:
+                    return {
+                        "ok": True,
+                        "sensor_name": sensor_name,
+                        "filament_detected": filament_detected,
+                        "sensor": last_sensor_result,
+                        "status": last_status,
+                        "stable_for_s": now - stable_since,
+                    }
+            else:
+                stable_since = None
+
+            time.sleep(max(0.02, poll_interval_s))
+
+        expected_state = "triggered" if filament_detected else "clear"
+        return {
+            "ok": False,
+            "error": f"timeout waiting for ACE motion idle with sensor '{sensor_name}' {expected_state}",
+            "sensor_name": sensor_name,
+            "last_sensor_result": last_sensor_result,
+            "last_status": last_status,
+            "last_status_error": last_status_error,
+            "confirm_s": hold_required,
+        }
+
     def _unwind_and_wait(self, slot: int, mm: float, speed: float, timeout_s: Optional[float] = None) -> Dict[str, Any]:
         length = max(0, int(mm))
         speed_int = max(1, int(speed))
@@ -909,6 +975,8 @@ class AceController:
             speed = _int(payload, "speed", self.feed_speed)
             sensor_name = str(payload.get("sensor") or self.sensor_name).strip() or self.sensor_name
             timeout_s = _float(payload, "timeout_s", (float(mm) / max(float(speed), 1.0)) + 10.0)
+            settle_timeout_s = _float(payload, "settle_timeout_s", 5.0)
+            confirm_s = _float(payload, "confirm_s", 0.5)
             slot_status = self._get_slot_status(slot, refresh=True)
             if not slot_status.get("ok", False):
                 return slot_status
@@ -929,7 +997,13 @@ class AceController:
                     self.transport.rpc_call("stop_feed_filament", {"index": slot}),
                     "stop_feed_filament",
                 )
-                settle_result = self._wait_for_motion_complete(slot, 5.0)
+                settle_result = self._wait_for_motion_and_sensor_state(
+                    slot,
+                    sensor_name,
+                    True,
+                    settle_timeout_s,
+                    confirm_s=confirm_s,
+                )
                 if wait_result.get("ok", False) and stop_result.get("ok", False) and settle_result.get("ok", False):
                     result = {
                         "ok": True,
@@ -963,6 +1037,7 @@ class AceController:
             sensor_name = str(payload.get("sensor") or self.sensor_name).strip() or self.sensor_name
             timeout_s = _float(payload, "timeout_s", (float(mm) / max(float(speed), 1.0)) + 10.0)
             settle_timeout_s = _float(payload, "settle_timeout_s", 5.0)
+            confirm_s = _float(payload, "confirm_s", 0.5)
             sensor_result = self._query_sensor_state(sensor_name)
             if sensor_result.get("ok", False) and not sensor_result.get("filament_detected", False):
                 result = {
@@ -983,7 +1058,13 @@ class AceController:
                         self.transport.rpc_call("stop_unwind_filament", {"index": slot}),
                         "stop_unwind_filament",
                     )
-                    settle_result = self._wait_for_motion_complete(slot, settle_timeout_s)
+                    settle_result = self._wait_for_motion_and_sensor_state(
+                        slot,
+                        sensor_name,
+                        False,
+                        settle_timeout_s,
+                        confirm_s=confirm_s,
+                    )
                     if wait_result.get("ok", False) and stop_result.get("ok", False) and settle_result.get("ok", False):
                         result = {
                             "ok": True,
@@ -1001,14 +1082,19 @@ class AceController:
                         error = wait_result.get("error", "sensor did not clear")
                         if wait_result.get("ok", False) and stop_result.get("ok", False):
                             error = settle_result.get("error", "ACE unwind did not settle after stop")
-                        result = {
-                            "ok": False,
-                            "error": error,
-                            "sensor_name": sensor_name,
-                            "sensor": wait_result,
-                            "stop_result": stop_result,
-                            "settle_result": settle_result,
-                        }
+                    result = {
+                        "ok": False,
+                        "error": error,
+                        "sensor_name": sensor_name,
+                        "sensor": wait_result,
+                        "stop_result": stop_result,
+                        "settle_result": settle_result,
+                    }
+        elif cmd == "wait_motion":
+            if slot is None:
+                return {"ok": False, "error": "wait_motion requires slot 1..4 or index 0..3"}
+            timeout_s = _float(payload, "timeout_s", 5.0)
+            result = self._wait_for_motion_complete(slot, timeout_s)
         elif cmd == "clear_hub":
             if slot is None:
                 return {"ok": False, "error": "clear_hub requires slot 1..4 or index 0..3"}
@@ -1331,7 +1417,7 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="action")
 
     command_parser = subparsers.add_parser("command", help="Send one ACE command")
-    command_parser.add_argument("--cmd", required=True, help="feed|feed_wait|retract|retract_wait|feed_to_sensor|retract_to_sensor|stop|stop_unwind|dry_start|dry_stop|status_refresh|slot_status|assert_slot_ready|raw_method|set_serial")
+    command_parser.add_argument("--cmd", required=True, help="feed|feed_wait|retract|retract_wait|feed_to_sensor|retract_to_sensor|wait_motion|clear_hub|stop|stop_unwind|dry_start|dry_stop|status_refresh|slot_status|assert_slot_ready|raw_method|set_serial")
     command_parser.add_argument("--slot", type=int, default=None, help="ACE user slot 1..4")
     command_parser.add_argument("--mm", type=int, default=None)
     command_parser.add_argument("--speed", type=int, default=None)

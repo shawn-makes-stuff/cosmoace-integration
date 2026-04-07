@@ -193,6 +193,7 @@ These are the macros intended to stay visible and useful from the Mainsail panel
 - `ACE_LOAD_TO_PRINTHEAD SLOT=1 LENGTH=20`
 - `ACE_UNLOAD_TO_SENSOR SLOT=1`
 - `ACE_RETRACT_SLOT SLOT=1`
+- `ACE_CLEAR_HUB SLOT=1`
 - `ACE_PROBE_SENSOR_IN SLOT=1`
 - `ACE_PROBE_SENSOR_OUT SLOT=1`
 - `ACE_SYNC_LOAD SLOT=1 LENGTH=20`
@@ -212,6 +213,12 @@ Unload back to the sensor:
 
 ```gcode
 ACE_UNLOAD_TO_SENSOR SLOT=1
+```
+
+Clear the hub path after unload:
+
+```gcode
+ACE_CLEAR_HUB SLOT=1
 ```
 
 ## Current Behavior Notes

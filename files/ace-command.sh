@@ -6,11 +6,11 @@ ACE_SCRIPT="${ACE_SCRIPT:-/user-resource/ace-addon/ace-addon.py}"
 ACE_CONFIG="${ACE_ADDON_CONFIG:-/user-resource/ace-addon/ace-addon.conf}"
 ACE_URL="${ACE_URL:-http://127.0.0.1:8091}"
 ACE_HTTP_CONNECT_TIMEOUT="${ACE_HTTP_CONNECT_TIMEOUT:-2}"
-ACE_HTTP_TIMEOUT="${ACE_HTTP_TIMEOUT:-30}"
+ACE_HTTP_TIMEOUT="${ACE_HTTP_TIMEOUT:-180}"
 
 usage() {
     echo "Usage: $0 <cmd> [args...]"
-    echo "Commands: feed, feed-wait, retract, retract-wait, feed-to-sensor, retract-to-sensor, clear-hub, stop, stop-unwind, dry-start, dry-stop, status, status-refresh, slot-status, assert-slot-ready, set-serial, debug-cli"
+    echo "Commands: feed, feed-wait, retract, retract-wait, feed-to-sensor, retract-to-sensor, wait-motion, clear-hub, stop, stop-unwind, dry-start, dry-stop, status, status-refresh, slot-status, assert-slot-ready, set-serial, debug-cli"
     exit 1
 }
 
@@ -18,11 +18,12 @@ fetch_json() {
     local method="$1"
     local path="$2"
     local payload="${3:-}"
+    local request_timeout="${4:-${ACE_HTTP_TIMEOUT}}"
     if command -v curl >/dev/null 2>&1; then
         if [ -n "${payload}" ]; then
             curl -sS \
                 --connect-timeout "${ACE_HTTP_CONNECT_TIMEOUT}" \
-                --max-time "${ACE_HTTP_TIMEOUT}" \
+                --max-time "${request_timeout}" \
                 -X "${method}" \
                 -H "Content-Type: application/json" \
                 -d "${payload}" \
@@ -30,15 +31,15 @@ fetch_json() {
         else
             curl -sS \
                 --connect-timeout "${ACE_HTTP_CONNECT_TIMEOUT}" \
-                --max-time "${ACE_HTTP_TIMEOUT}" \
+                --max-time "${request_timeout}" \
                 -X "${method}" \
                 "${ACE_URL}${path}"
         fi
     elif command -v wget >/dev/null 2>&1; then
         if [ -n "${payload}" ]; then
-            wget -qO- -T "${ACE_HTTP_TIMEOUT}" --post-data="${payload}" --header="Content-Type: application/json" "${ACE_URL}${path}"
+            wget -qO- -T "${request_timeout}" --post-data="${payload}" --header="Content-Type: application/json" "${ACE_URL}${path}"
         else
-            wget -qO- -T "${ACE_HTTP_TIMEOUT}" "${ACE_URL}${path}"
+            wget -qO- -T "${request_timeout}" "${ACE_URL}${path}"
         fi
     else
         echo '{"ok":false,"error":"neither curl nor wget found"}'
@@ -59,15 +60,17 @@ if isinstance(data, dict) and not data.get("ok", True):
 
 post_json() {
     local payload="$1"
+    local request_timeout="${2:-${ACE_HTTP_TIMEOUT}}"
     local response
-    response="$(fetch_json POST /command "${payload}")"
+    response="$(fetch_json POST /command "${payload}" "${request_timeout}")"
     printf '%s\n' "${response}"
     printf '%s' "${response}" | validate_json_ok >/dev/null
 }
 
 get_json() {
     local path="$1"
-    fetch_json GET "${path}"
+    local request_timeout="${2:-${ACE_HTTP_TIMEOUT}}"
+    fetch_json GET "${path}" "" "${request_timeout}"
 }
 
 run_python() {
@@ -90,7 +93,8 @@ case "${cmd}" in
         slot="${2:-1}"
         mm="${3:-0}"
         speed="${4:-0}"
-        post_json "{\"cmd\":\"feed_wait\",\"slot\":${slot},\"mm\":${mm},\"speed\":${speed}}"
+        timeout="${5:-0}"
+        post_json "{\"cmd\":\"feed_wait\",\"slot\":${slot},\"mm\":${mm},\"speed\":${speed},\"timeout_s\":${timeout}}" "${ACE_HTTP_TIMEOUT}"
         ;;
     retract)
         slot="${2:-1}"
@@ -102,7 +106,8 @@ case "${cmd}" in
         slot="${2:-1}"
         mm="${3:-0}"
         speed="${4:-0}"
-        post_json "{\"cmd\":\"retract_wait\",\"slot\":${slot},\"mm\":${mm},\"speed\":${speed}}"
+        timeout="${5:-0}"
+        post_json "{\"cmd\":\"retract_wait\",\"slot\":${slot},\"mm\":${mm},\"speed\":${speed},\"timeout_s\":${timeout}}" "${ACE_HTTP_TIMEOUT}"
         ;;
     feed-to-sensor)
         slot="${2:-1}"
@@ -110,7 +115,9 @@ case "${cmd}" in
         speed="${4:-0}"
         sensor="${5:-runout}"
         timeout="${6:-0}"
-        post_json "{\"cmd\":\"feed_to_sensor\",\"slot\":${slot},\"mm\":${mm},\"speed\":${speed},\"sensor\":\"${sensor}\",\"timeout_s\":${timeout}}"
+        settle_timeout="${7:-5}"
+        confirm_s="${8:-0.5}"
+        post_json "{\"cmd\":\"feed_to_sensor\",\"slot\":${slot},\"mm\":${mm},\"speed\":${speed},\"sensor\":\"${sensor}\",\"timeout_s\":${timeout},\"settle_timeout_s\":${settle_timeout},\"confirm_s\":${confirm_s}}" "${ACE_HTTP_TIMEOUT}"
         ;;
     retract-to-sensor)
         slot="${2:-1}"
@@ -118,7 +125,14 @@ case "${cmd}" in
         speed="${4:-0}"
         sensor="${5:-runout}"
         timeout="${6:-0}"
-        post_json "{\"cmd\":\"retract_to_sensor\",\"slot\":${slot},\"mm\":${mm},\"speed\":${speed},\"sensor\":\"${sensor}\",\"timeout_s\":${timeout}}"
+        settle_timeout="${7:-5}"
+        confirm_s="${8:-0.5}"
+        post_json "{\"cmd\":\"retract_to_sensor\",\"slot\":${slot},\"mm\":${mm},\"speed\":${speed},\"sensor\":\"${sensor}\",\"timeout_s\":${timeout},\"settle_timeout_s\":${settle_timeout},\"confirm_s\":${confirm_s}}" "${ACE_HTTP_TIMEOUT}"
+        ;;
+    wait-motion)
+        slot="${2:-1}"
+        timeout="${3:-5}"
+        post_json "{\"cmd\":\"wait_motion\",\"slot\":${slot},\"timeout_s\":${timeout}}" "${ACE_HTTP_TIMEOUT}"
         ;;
     clear-hub)
         slot="${2:-1}"
@@ -129,7 +143,7 @@ case "${cmd}" in
         sensor="${7:-runout}"
         settle_s="${8:-0.25}"
         confirm_s="${9:-0.5}"
-        post_json "{\"cmd\":\"clear_hub\",\"slot\":${slot},\"mm\":${mm},\"step_mm\":${step_mm},\"max_extra_mm\":${max_extra_mm},\"speed\":${speed},\"sensor\":\"${sensor}\",\"settle_s\":${settle_s},\"confirm_s\":${confirm_s}}"
+        post_json "{\"cmd\":\"clear_hub\",\"slot\":${slot},\"mm\":${mm},\"step_mm\":${step_mm},\"max_extra_mm\":${max_extra_mm},\"speed\":${speed},\"sensor\":\"${sensor}\",\"settle_s\":${settle_s},\"confirm_s\":${confirm_s}}" "${ACE_HTTP_TIMEOUT}"
         ;;
     stop)
         slot="${2:-1}"
