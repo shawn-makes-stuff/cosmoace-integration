@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/bin/env python3
 """ACE addon service with Anycubic ACE framed JSON RPC transport."""
 
 import argparse
@@ -10,7 +10,6 @@ import os
 import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -22,8 +21,6 @@ except Exception:  # pragma: no cover
     serial = None
 
 DEFAULT_CONFIG_PATH = "/user-resource/ace-addon/ace-addon.conf"
-DEFAULT_LISTEN_HOST = "127.0.0.1"
-DEFAULT_LISTEN_PORT = 8091
 
 
 def read_text(path: str, default: str = "") -> str:
@@ -38,8 +35,8 @@ class AceTransport:
     def __init__(self, cfg: configparser.ConfigParser) -> None:
         self.port = cfg.get("ace", "serial_port", fallback="auto").strip() or "auto"
         self.baudrate = cfg.getint("ace", "baudrate", fallback=115200)
-        self.command_timeout_s = cfg.getfloat("ace", "command_timeout_s", fallback=1.0)
-        self.rpc_timeout_s = cfg.getfloat("ace", "rpc_timeout_s", fallback=2.5)
+        self.command_timeout_s = cfg.getfloat("ace", "command_timeout_s", fallback=2.0)
+        self.rpc_timeout_s = cfg.getfloat("ace", "rpc_timeout_s", fallback=5.0)
         self.read_idle_s = cfg.getfloat("ace", "read_idle_s", fallback=0.08)
         self.read_max_bytes = cfg.getint("ace", "read_max_bytes", fallback=4096)
         self._resolved_port: Optional[str] = None
@@ -182,36 +179,37 @@ class AceTransport:
         self._resolved_port = str(free[0])
         return self._resolved_port
 
-    def connect(self) -> bool:
+    def connect(self, retries: int = 5, retry_delay_s: float = 1.0) -> bool:
         if serial is None:
             self.last_error = "pyserial is not available"
             return False
         if self._ser and self._ser.is_open:
             return True
-        target_port = self._resolve_target_port()
-        if not target_port:
-            return False
-        holders = self._port_holders(target_port)
-        if holders:
-            lead = holders[0]
-            self.last_error = (
-                f"port {target_port} is already in use by pid {lead.get('pid')} ({lead.get('comm')})"
-            )
-            return False
-        try:
-            self._ser = serial.Serial(
-                target_port,
-                self.baudrate,
-                timeout=self.command_timeout_s,
-                write_timeout=self.command_timeout_s,
-            )
-            self.last_error = None
-            self.last_seen_unix = time.time()
-            return True
-        except Exception as exc:
-            self.last_error = f"connect failed: {exc}"
-            self._ser = None
-            return False
+
+        for attempt in range(retries + 1):
+            target_port = self._resolve_target_port()
+            if target_port:
+                try:
+                    self._ser = serial.Serial(
+                        target_port,
+                        self.baudrate,
+                        timeout=self.command_timeout_s,
+                        write_timeout=self.command_timeout_s,
+                    )
+                    self.last_error = None
+                    self.last_seen_unix = time.time()
+                    return True
+                except (serial.SerialException, OSError) as exc:
+                    err_str = str(exc)
+                    if "No such device" in err_str or "[Errno 19]" in err_str:
+                        time.sleep(2.0)
+                    self.last_error = f"connect failed: {exc}"
+                    self._ser = None
+            
+            if attempt < retries:
+                time.sleep(retry_delay_s)
+        
+        return False
 
     def disconnect(self) -> None:
         try:
@@ -517,7 +515,7 @@ class MoonrakerClient:
 
 
 class AceController:
-    def __init__(self, cfg: configparser.ConfigParser, start_polling: bool = True) -> None:
+    def __init__(self, cfg: configparser.ConfigParser) -> None:
         self.cfg = cfg
         self.transport = AceTransport(cfg)
         self.moonraker = MoonrakerClient(cfg)
@@ -528,22 +526,13 @@ class AceController:
         self.feed_speed = cfg.getint("ace", "feed_speed", fallback=25)
         self.retract_speed = cfg.getint("ace", "retract_speed", fallback=15)
         self.dry_fan_speed = cfg.getint("ace", "dry_fan_speed", fallback=7000)
-        self.keepalive_enabled = cfg.getboolean("ace", "keepalive_enabled", fallback=True)
-        self.keepalive_interval_s = cfg.getfloat("ace", "keepalive_interval_s", fallback=1.0)
         self.sensor_name = cfg.get("klipper", "sensor_name", fallback="runout").strip() or "runout"
         self.last_ace_status: Optional[Dict[str, Any]] = None
         self.last_ace_status_unix: float = 0.0
         self.last_command: Optional[Dict[str, Any]] = None
-        self._stop = threading.Event()
-        self._poll_thread: Optional[threading.Thread] = None
-        if start_polling:
-            self._poll_thread = threading.Thread(target=self._poll_loop, name="ace-addon-poll", daemon=True)
-            self._poll_thread.start()
 
     def close(self) -> None:
-        self._stop.set()
-        if self._poll_thread is not None:
-            self._poll_thread.join(timeout=2.0)
+        pass
 
     @staticmethod
     def _user_slot_to_index(slot: int) -> Optional[int]:
@@ -686,22 +675,30 @@ class AceController:
         }
 
     def _wait_for_motion_complete(self, slot: int, timeout_s: float, poll_interval_s: float = 0.2) -> Dict[str, Any]:
+        # Give the firmware a moment to register the command and switch to busy state
+        time.sleep(0.5)
         deadline = time.time() + max(0.5, timeout_s)
         last_status: Optional[Dict[str, Any]] = None
         last_error: Optional[str] = None
+        last_heartbeat_time = 0.0
         while time.time() < deadline:
-            status_result = self._get_ace_status(refresh=True)
-            if status_result.get("ok", False):
-                result = status_result.get("status")
-                if isinstance(result, dict):
-                    last_status = result
-                    if not self._is_motion_active(result, slot):
-                        return {
-                            "ok": True,
-                            "status": result,
-                        }
-            else:
-                last_error = str(status_result.get("error", "status refresh failed"))
+            now = time.time()
+            # Send a heartbeat every 0.8 seconds to keep motors active
+            if (now - last_heartbeat_time) >= 0.8:
+                status_result = self._get_ace_status(refresh=True)
+                if status_result.get("ok", False):
+                    result = status_result.get("status")
+                    if isinstance(result, dict):
+                        last_status = result
+                        if not self._is_motion_active(result, slot):
+                            return {
+                                "ok": True,
+                                "status": result,
+                            }
+                else:
+                    last_error = str(status_result.get("error", "status refresh failed"))
+                last_heartbeat_time = now
+            
             time.sleep(max(0.05, poll_interval_s))
         return {
             "ok": False,
@@ -711,15 +708,17 @@ class AceController:
         }
 
     def _is_motion_active(self, status: Dict[str, Any], slot: int) -> bool:
-        active_states = {"busy", "feeding", "unwinding", "shifting"}
         overall_status = str(status.get("status", "")).strip().lower()
         action = str(status.get("action", "")).strip().lower()
+        
+        active_states = {"busy", "feeding", "unwinding", "shifting"}
         slots = status.get("slots")
         slot_status = ""
         if isinstance(slots, list) and 0 <= slot < len(slots):
             slot_entry = slots[slot]
             if isinstance(slot_entry, dict):
                 slot_status = str(slot_entry.get("status", "")).strip().lower()
+        
         return (
             overall_status in active_states
             or action in active_states
@@ -760,19 +759,30 @@ class AceController:
     ) -> Dict[str, Any]:
         deadline = time.time() + max(0.2, timeout_s)
         last_result: Optional[Dict[str, Any]] = None
+        last_heartbeat_time = 0.0
         while time.time() < deadline:
+            now = time.time()
+            # Send a heartbeat every 0.8 seconds to keep motors active
+            if (now - last_heartbeat_time) >= 0.8:
+                self._get_ace_status(refresh=True)
+                last_heartbeat_time = now
+
+
             result = self._query_sensor_state(sensor_name)
             if result.get("ok", False):
                 last_result = result
-                if bool(result.get("filament_detected")) == filament_detected:
+                detected = bool(result.get("filament_detected"))
+                if detected == filament_detected:
                     return result
             else:
                 last_result = result
             time.sleep(max(0.02, poll_interval_s))
+        
         return {
             "ok": False,
             "error": f"timeout waiting for sensor '{sensor_name}' to become {'triggered' if filament_detected else 'clear'}",
             "last_sensor_result": last_result,
+            "last_ace_status": self.last_ace_status,
         }
 
     def _confirm_sensor_state(
@@ -890,7 +900,9 @@ class AceController:
     def _unwind_and_wait(self, slot: int, mm: float, speed: float, timeout_s: Optional[float] = None) -> Dict[str, Any]:
         length = max(0, int(mm))
         speed_int = max(1, int(speed))
-        timeout = timeout_s if timeout_s is not None else (float(length) / max(float(speed_int), 1.0)) + 5.0
+        # Increased buffer from 5s to 30s
+        timeout = timeout_s if timeout_s is not None else (float(length) / max(float(speed_int), 1.0)) + 30.0
+
         result = self.transport.rpc_call(
             "unwind_filament",
             {"index": slot, "length": length, "speed": speed_int, "mode": 0},
@@ -908,38 +920,32 @@ class AceController:
             "speed": speed_int,
         }
 
-    def _poll_loop(self) -> None:
-        while not self._stop.is_set():
-            if self.keepalive_enabled:
-                try:
-                    res = self.transport.rpc_call("get_status")
-                    if res.get("ok", False):
-                        parsed = res.get("response")
-                        if isinstance(parsed, dict) and isinstance(parsed.get("result"), dict):
-                            self.last_ace_status = parsed.get("result")
-                            self.last_ace_status_unix = time.time()
-                except Exception as exc:
-                    self.transport.last_error = f"poll failed: {exc}"
-            self._stop.wait(max(0.2, self.keepalive_interval_s))
-
     def execute(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        params = payload.get("params") or {}
+        if not isinstance(params, dict):
+            params = {}
+        
         cmd = str(payload.get("cmd", "")).strip().lower()
         slot = self._slot_from_payload(payload)
+        if slot is None:
+            slot = self._slot_from_payload(params)
+            
         result: Dict[str, Any]
+        error: str = "unknown error"
         extra_command_fields: Dict[str, Any] = {}
 
         if cmd == "feed":
             if slot is None:
                 return {"ok": False, "error": "feed requires slot 1..4 or index 0..3"}
-            mm = _int(payload, "mm", self.default_feed_mm)
-            speed = _int(payload, "speed", self.feed_speed)
+            mm = _int(params if "mm" in params else payload, "mm", self.default_feed_mm)
+            speed = _int(params if "speed" in params else payload, "speed", self.feed_speed)
             result = self.transport.rpc_call("feed_filament", {"index": slot, "length": mm, "speed": speed})
         elif cmd == "feed_wait":
             if slot is None:
                 return {"ok": False, "error": "feed_wait requires slot 1..4 or index 0..3"}
-            mm = _int(payload, "mm", self.default_feed_mm)
-            speed = _int(payload, "speed", self.feed_speed)
-            timeout_s = _float(payload, "timeout_s", (float(mm) / max(float(speed), 1.0)) + 5.0)
+            mm = _int(params if "mm" in params else payload, "mm", self.default_feed_mm)
+            speed = _int(params if "speed" in params else payload, "speed", self.feed_speed)
+            timeout_s = _float(params if "timeout_s" in params else payload, "timeout_s", (float(mm) / max(float(speed), 1.0)) + 30.0)
             result = self.transport.rpc_call("feed_filament", {"index": slot, "length": mm, "speed": speed})
             if result.get("ok", False):
                 wait_result = self._wait_for_motion_complete(slot, timeout_s)
@@ -948,8 +954,8 @@ class AceController:
         elif cmd == "retract":
             if slot is None:
                 return {"ok": False, "error": "retract requires slot 1..4 or index 0..3"}
-            mm = _int(payload, "mm", self.default_retract_mm)
-            speed = _int(payload, "speed", self.retract_speed)
+            mm = _int(params if "mm" in params else payload, "mm", self.default_retract_mm)
+            speed = _int(params if "speed" in params else payload, "speed", self.retract_speed)
             result = self.transport.rpc_call(
                 "unwind_filament",
                 {"index": slot, "length": mm, "speed": speed, "mode": 0},
@@ -957,9 +963,9 @@ class AceController:
         elif cmd == "retract_wait":
             if slot is None:
                 return {"ok": False, "error": "retract_wait requires slot 1..4 or index 0..3"}
-            mm = _int(payload, "mm", self.default_retract_mm)
-            speed = _int(payload, "speed", self.retract_speed)
-            timeout_s = _float(payload, "timeout_s", (float(mm) / max(float(speed), 1.0)) + 5.0)
+            mm = _int(params if "mm" in params else payload, "mm", self.default_retract_mm)
+            speed = _int(params if "speed" in params else payload, "speed", self.retract_speed)
+            timeout_s = _float(params if "timeout_s" in params else payload, "timeout_s", (float(mm) / max(float(speed), 1.0)) + 30.0)
             result = self.transport.rpc_call(
                 "unwind_filament",
                 {"index": slot, "length": mm, "speed": speed, "mode": 0},
@@ -971,12 +977,12 @@ class AceController:
         elif cmd == "feed_to_sensor":
             if slot is None:
                 return {"ok": False, "error": "feed_to_sensor requires slot 1..4 or index 0..3"}
-            mm = _int(payload, "mm", self.default_feed_mm)
-            speed = _int(payload, "speed", self.feed_speed)
-            sensor_name = str(payload.get("sensor") or self.sensor_name).strip() or self.sensor_name
-            timeout_s = _float(payload, "timeout_s", (float(mm) / max(float(speed), 1.0)) + 10.0)
-            settle_timeout_s = _float(payload, "settle_timeout_s", 5.0)
-            confirm_s = _float(payload, "confirm_s", 0.5)
+            mm = _int(params if "mm" in params else payload, "mm", self.default_feed_mm)
+            speed = _int(params if "speed" in params else payload, "speed", self.feed_speed)
+            sensor_name = str(params.get("sensor") or payload.get("sensor") or self.sensor_name).strip() or self.sensor_name
+            timeout_s = _float(params if "timeout_s" in params else payload, "timeout_s", (float(mm) / max(float(speed), 1.0)) + 30.0)
+            settle_timeout_s = _float(params if "settle_timeout_s" in params else payload, "settle_timeout_s", 5.0)
+            confirm_s = _float(params if "confirm_s" in params else payload, "confirm_s", 0.5)
             slot_status = self._get_slot_status(slot, refresh=True)
             if not slot_status.get("ok", False):
                 return slot_status
@@ -1032,12 +1038,12 @@ class AceController:
         elif cmd == "retract_to_sensor":
             if slot is None:
                 return {"ok": False, "error": "retract_to_sensor requires slot 1..4 or index 0..3"}
-            mm = _int(payload, "mm", self.default_retract_mm)
-            speed = _int(payload, "speed", self.retract_speed)
-            sensor_name = str(payload.get("sensor") or self.sensor_name).strip() or self.sensor_name
-            timeout_s = _float(payload, "timeout_s", (float(mm) / max(float(speed), 1.0)) + 10.0)
-            settle_timeout_s = _float(payload, "settle_timeout_s", 5.0)
-            confirm_s = _float(payload, "confirm_s", 0.5)
+            mm = _int(params if "mm" in params else payload, "mm", self.default_retract_mm)
+            speed = _int(params if "speed" in params else payload, "speed", self.retract_speed)
+            sensor_name = str(params.get("sensor") or payload.get("sensor") or self.sensor_name).strip() or self.sensor_name
+            timeout_s = _float(params if "timeout_s" in params else payload, "timeout_s", (float(mm) / max(float(speed), 1.0)) + 30.0)
+            settle_timeout_s = _float(params if "settle_timeout_s" in params else payload, "settle_timeout_s", 5.0)
+            confirm_s = _float(params if "confirm_s" in params else payload, "confirm_s", 0.5)
             sensor_result = self._query_sensor_state(sensor_name)
             if sensor_result.get("ok", False) and not sensor_result.get("filament_detected", False):
                 result = {
@@ -1082,29 +1088,29 @@ class AceController:
                         error = wait_result.get("error", "sensor did not clear")
                         if wait_result.get("ok", False) and stop_result.get("ok", False):
                             error = settle_result.get("error", "ACE unwind did not settle after stop")
-                    result = {
-                        "ok": False,
-                        "error": error,
-                        "sensor_name": sensor_name,
-                        "sensor": wait_result,
-                        "stop_result": stop_result,
-                        "settle_result": settle_result,
-                    }
+                        result = {
+                            "ok": False,
+                            "error": error,
+                            "sensor_name": sensor_name,
+                            "sensor": wait_result,
+                            "stop_result": stop_result,
+                            "settle_result": settle_result,
+                        }
         elif cmd == "wait_motion":
             if slot is None:
                 return {"ok": False, "error": "wait_motion requires slot 1..4 or index 0..3"}
-            timeout_s = _float(payload, "timeout_s", 5.0)
+            timeout_s = _float(params if "timeout_s" in params else payload, "timeout_s", 5.0)
             result = self._wait_for_motion_complete(slot, timeout_s)
         elif cmd == "clear_hub":
             if slot is None:
                 return {"ok": False, "error": "clear_hub requires slot 1..4 or index 0..3"}
-            base_mm = _float(payload, "mm", self.default_retract_mm)
-            step_mm = _float(payload, "step_mm", 10.0)
-            max_extra_mm = _float(payload, "max_extra_mm", 60.0)
-            speed = _float(payload, "speed", self.retract_speed)
-            sensor_name = str(payload.get("sensor") or self.sensor_name).strip() or self.sensor_name
-            settle_s = _float(payload, "settle_s", 0.25)
-            confirm_s = _float(payload, "confirm_s", 0.5)
+            base_mm = _float(params if "mm" in params else payload, "mm", self.default_retract_mm)
+            step_mm = _float(params if "step_mm" in params else payload, "step_mm", 10.0)
+            max_extra_mm = _float(params if "max_extra_mm" in params else payload, "max_extra_mm", 60.0)
+            speed = _float(params if "speed" in params else payload, "speed", self.retract_speed)
+            sensor_name = str(params.get("sensor") or payload.get("sensor") or self.sensor_name).strip() or self.sensor_name
+            settle_s = _float(params if "settle_s" in params else payload, "settle_s", 0.25)
+            confirm_s = _float(params if "confirm_s" in params else payload, "confirm_s", 0.5)
             if base_mm <= 0:
                 return {"ok": False, "error": "clear_hub requires mm>0"}
             if step_mm <= 0:
@@ -1200,9 +1206,9 @@ class AceController:
             result = self.transport.rpc_call("stop_unwind_filament", {"index": slot})
             result = self._normalize_stop_result(slot, result, "stop_unwind_filament")
         elif cmd == "dry_start":
-            temp_c = _int(payload, "temp_c", self.default_dry_temp_c)
-            minutes = _int(payload, "minutes", self.default_dry_minutes)
-            fan_speed = _int(payload, "fan_speed", self.dry_fan_speed)
+            temp_c = _int(params if "temp_c" in params else payload, "temp_c", self.default_dry_temp_c)
+            minutes = _int(params if "minutes" in params else payload, "minutes", self.default_dry_minutes)
+            fan_speed = _int(params if "fan_speed" in params else payload, "fan_speed", self.dry_fan_speed)
             result = self.transport.rpc_call(
                 "drying",
                 {"temp": temp_c, "fan_speed": fan_speed, "duration": minutes},
@@ -1226,17 +1232,17 @@ class AceController:
                     "slot_status": result,
                 }
         elif cmd == "raw_method":
-            method = str(payload.get("method", "")).strip()
-            params = payload.get("params")
+            method = str(params.get("method") or payload.get("method", "")).strip()
+            raw_params = params.get("params") or payload.get("params")
             if not method:
                 return {"ok": False, "error": "raw_method requires 'method'"}
-            if params is not None and not isinstance(params, dict):
+            if raw_params is not None and not isinstance(raw_params, dict):
                 return {"ok": False, "error": "raw_method params must be object"}
-            result = self.transport.rpc_call(method, params if isinstance(params, dict) else None)
+            result = self.transport.rpc_call(method, raw_params if isinstance(raw_params, dict) else None)
             extra_command_fields["method"] = method
         elif cmd == "set_serial":
-            port = payload.get("port")
-            baudrate = self._optional_int(payload.get("baudrate"))
+            port = params.get("port") or payload.get("port")
+            baudrate = self._optional_int(params.get("baudrate") or payload.get("baudrate"))
             result = self.transport.reconfigure(
                 str(port).strip() if isinstance(port, str) and port.strip() else None,
                 baudrate,
@@ -1253,7 +1259,7 @@ class AceController:
     def status(self) -> Dict[str, Any]:
         return {
             "service": "ace-addon",
-            "api_version": "0.2",
+            "api_version": "0.3",
             "transport": self.transport.status(),
             "defaults": {
                 "feed_mm": self.default_feed_mm,
@@ -1263,8 +1269,6 @@ class AceController:
             },
             "ace_status": self.last_ace_status,
             "ace_status_unix": self.last_ace_status_unix,
-            "keepalive_enabled": self.keepalive_enabled,
-            "keepalive_interval_s": self.keepalive_interval_s,
             "last_command": self.last_command,
         }
 
@@ -1273,11 +1277,6 @@ def parse_config(path: str) -> configparser.ConfigParser:
     cfg = configparser.ConfigParser()
     cfg.read_dict(
         {
-            "service": {
-                "listen_host": DEFAULT_LISTEN_HOST,
-                "listen_port": str(DEFAULT_LISTEN_PORT),
-                "log_path": "/board-resource/ace-addon.log",
-            },
             "ace": {
                 "serial_port": "auto",
                 "baudrate": "115200",
@@ -1288,8 +1287,7 @@ def parse_config(path: str) -> configparser.ConfigParser:
                 "feed_speed": "25",
                 "retract_speed": "15",
                 "dry_fan_speed": "7000",
-                "keepalive_enabled": "true",
-                "keepalive_interval_s": "1.0",
+                "log_path": "/board-resource/ace-addon.log",
             },
             "klipper": {
                 "sensor_name": "runout",
@@ -1311,13 +1309,12 @@ def parse_config(path: str) -> configparser.ConfigParser:
 
 
 def configure_logging(cfg: configparser.ConfigParser) -> None:
-    log_path = cfg.get("service", "log_path", fallback="/board-resource/ace-addon.log")
+    log_path = cfg.get("ace", "log_path", fallback="/board-resource/ace-addon.log")
     log_dir = os.path.dirname(log_path)
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
     handlers = [
         logging.FileHandler(log_path, encoding="utf-8"),
-        logging.StreamHandler(),
     ]
     logging.basicConfig(
         level=logging.INFO,
@@ -1325,49 +1322,6 @@ def configure_logging(cfg: configparser.ConfigParser) -> None:
         handlers=handlers,
         force=True,
     )
-
-
-def make_handler(controller: AceController):
-    class Handler(BaseHTTPRequestHandler):
-        def _json(self, status_code: int, payload: Dict[str, Any]) -> None:
-            body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-            self.send_response(status_code)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def do_GET(self) -> None:  # noqa: N802
-            if self.path == "/healthz":
-                self._json(200, {"ok": True})
-                return
-            if self.path == "/status":
-                self._json(200, {"ok": True, "status": controller.status()})
-                return
-            self._json(404, {"ok": False, "error": "not found"})
-
-        def do_POST(self) -> None:  # noqa: N802
-            if self.path != "/command":
-                self._json(404, {"ok": False, "error": "not found"})
-                return
-            try:
-                content_len = int(self.headers.get("Content-Length", "0"))
-                raw = self.rfile.read(content_len) if content_len > 0 else b"{}"
-                payload = json.loads(raw.decode("utf-8"))
-                if not isinstance(payload, dict):
-                    raise ValueError("payload must be object")
-            except Exception as exc:
-                self._json(400, {"ok": False, "error": f"bad request: {exc}"})
-                return
-
-            result = controller.execute(payload)
-            code = 200 if result.get("ok", False) else 500
-            self._json(code, result)
-
-        def log_message(self, fmt: str, *args: Any) -> None:
-            logging.info("http %s - %s", self.client_address[0], fmt % args)
-
-    return Handler
 
 
 def resolve_config_path(cli_path: Optional[str]) -> str:
@@ -1379,18 +1333,19 @@ def resolve_config_path(cli_path: Optional[str]) -> str:
     return DEFAULT_CONFIG_PATH
 
 
-def emit_json(payload: Dict[str, Any]) -> None:
-    json.dump(payload, sys.stdout, indent=2, sort_keys=True)
-    sys.stdout.write("\n")
+def emit_json(payload: Dict[str, Any], always: bool = False) -> None:
+    if always or not payload.get("ok", False):
+        json.dump(payload, sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
 
 
 def run_command(config_path: str, payload: Dict[str, Any]) -> int:
     cfg = parse_config(config_path)
     configure_logging(cfg)
-    controller = AceController(cfg, start_polling=False)
+    controller = AceController(cfg)
     try:
         result = controller.execute(payload)
-        emit_json(result)
+        emit_json(result, always=False)
         return 0 if result.get("ok", False) else 1
     finally:
         controller.close()
@@ -1400,11 +1355,11 @@ def run_command(config_path: str, payload: Dict[str, Any]) -> int:
 def run_status(config_path: str, refresh: bool) -> int:
     cfg = parse_config(config_path)
     configure_logging(cfg)
-    controller = AceController(cfg, start_polling=False)
+    controller = AceController(cfg)
     try:
         if refresh:
             controller.execute({"cmd": "status_refresh"})
-        emit_json({"ok": True, "status": controller.status()})
+        emit_json({"ok": True, "status": controller.status()}, always=True)
         return 0
     finally:
         controller.close()
@@ -1421,6 +1376,7 @@ def main() -> int:
     command_parser.add_argument("--slot", type=int, default=None, help="ACE user slot 1..4")
     command_parser.add_argument("--mm", type=int, default=None)
     command_parser.add_argument("--speed", type=int, default=None)
+    command_parser.add_argument("--timeout_s", type=float, default=None)
     command_parser.add_argument("--temp-c", dest="temp_c", type=int, default=None)
     command_parser.add_argument("--minutes", type=int, default=None)
     command_parser.add_argument("--fan-speed", dest="fan_speed", type=int, default=None)
@@ -1443,6 +1399,8 @@ def main() -> int:
             payload["mm"] = args.mm
         if args.speed is not None:
             payload["speed"] = args.speed
+        if args.timeout_s is not None:
+            payload["timeout_s"] = args.timeout_s
         if args.temp_c is not None:
             payload["temp_c"] = args.temp_c
         if args.minutes is not None:
@@ -1464,22 +1422,9 @@ def main() -> int:
         return run_command(config_path, payload)
     if args.action == "status":
         return run_status(config_path, refresh=bool(args.refresh))
-    cfg = parse_config(config_path)
-    configure_logging(cfg)
-    controller = AceController(cfg)
-    host = cfg.get("service", "listen_host", fallback=DEFAULT_LISTEN_HOST)
-    port = cfg.getint("service", "listen_port", fallback=DEFAULT_LISTEN_PORT)
-    server = ThreadingHTTPServer((host, port), make_handler(controller))
-    logging.info("ace-addon listening on %s:%d using config %s", host, port, config_path)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        controller.close()
-        controller.transport.disconnect()
-        server.server_close()
-    return 0
+
+    parser.print_help()
+    return 1
 
 
 if __name__ == "__main__":

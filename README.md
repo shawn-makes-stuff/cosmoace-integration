@@ -12,7 +12,7 @@ It does not target generic Klipper distributions or every slicer.
 ## What It Does
 
 CosmoACE installs:
-- a small ACE RPC service
+- a Python-based ACE CLI tool
 - a shell wrapper Klipper can call
 - a Klipper macro set for blocking start, toolchange, and end-print flows
 
