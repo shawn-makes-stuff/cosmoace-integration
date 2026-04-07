@@ -23,6 +23,7 @@ The supported print flow is:
 4. On toolchange, cut, unload back to the sensor, clear the hub, load the next slot, push to the printhead, sync-load, purge, wipe, and resume.
 
 ## Requirements
+An Elegoo Centauri Carbon and an Anycubic ACE Pro 1
 
 - A working CosmOS installation
 - SSH access as `root`
