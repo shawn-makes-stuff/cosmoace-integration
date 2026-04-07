@@ -1,29 +1,22 @@
 # CosmoACE Integration
 
 CosmoACE is a lightweight Anycubic ACE Pro add-on for CosmOS / OpenCentauri.
-It adds a blocking, slicer-safe multicolor workflow for printers wired like:
-
-`ACE -> hub -> filament sensor -> printhead`
 
 This repo is intentionally focused on:
-
 - CosmOS / OpenCentauri
 - OrcaSlicer and PrusaSlicer-style forks
 - lightweight printer-side integration
-- adjustable distances and speeds in Klipper macros
 
 It does not target generic Klipper distributions or every slicer.
 
 ## What It Does
 
 CosmoACE installs:
-
 - a small ACE RPC service
 - a shell wrapper Klipper can call
 - a Klipper macro set for blocking start, toolchange, and end-print flows
 
 The supported print flow is:
-
 1. Load the selected slot until the filament sensor triggers.
 2. Push from the sensor to the printhead by a configured distance.
 3. Sync-load, purge, wipe, and start printing.
@@ -31,7 +24,7 @@ The supported print flow is:
 
 ## Requirements
 
-- A working CosmOS / OpenCentauri printer
+- A working CosmOS installation
 - SSH access as `root`
 - Klipper `gcode_shell_command`
 - A configured `filament_switch_sensor`
@@ -40,6 +33,9 @@ The supported print flow is:
   - `M729`
   - `PAUSE_BASE`
   - `RESUME`
+
+Set your gcode in orcaslicer
+https://github.com/shawn-makes-stuff/cosmoace-integration/blob/main/docs/ORCA_GCODE.md
 
 ## Install
 
@@ -64,9 +60,18 @@ Installed files:
 
 `/etc/klipper/config/ace-addon.cfg` is your editable live macro config.
 
+## Hardware
+You will need this filament hub adapter which mounts to the Carbon Centauri's run-out sensor
+https://www.printables.com/model/1662192-centauri-carbon-multi-material-filament-hub-4-colo
+
+A modified ace cable.
+You will need to either modify the 4 pin end of the ace cable, or build an adapter. Pins 3 and 4 need to be swapped.
+<img width="210" height="247" alt="image" src="https://github.com/user-attachments/assets/815fdfb6-2ac8-48da-8321-fbdc7530f543" />
+
+
 ## Required Printer Config
 
-The only required manual printer config is your existing filament sensor hook.
+The only required manual printer config is your existing filament sensor hook, add this to printer.cfg
 
 Example:
 
@@ -101,7 +106,7 @@ The main required tuning value is:
 - `variable_load_to_printhead_mm`
 
 This is the distance from your filament sensor to the printhead for the active
-path. In the current project defaults:
+path. With the stock setup, the distance from sensor to printhead is about 730. Some tuning might still be needed in ace_addon.cfg
 
 ```cfg
 variable_load_to_printhead_mm: 730
@@ -110,137 +115,6 @@ variable_load_to_printhead_mm: 730
 If this value is too short, the new filament will not reach the hotend.
 If it is too long, you will overfeed before sync-load / purge.
 
-Other useful tuning values in `/etc/klipper/config/ace-addon.cfg`:
-
-- `variable_load_to_sensor_search_mm`
-- `variable_unload_to_sensor_search_mm`
-- `variable_retract_slot_mm`
-- `variable_clear_hub_step_mm`
-- `variable_clear_hub_max_extra_mm`
-- `variable_purge_mm`
-- `variable_purge_chunk_mm`
-- `variable_sync_load_mm`
-- `variable_sync_load_chunk_mm`
-- `variable_feed_speed_mm_s`
-- `variable_retract_speed_mm_s`
-
-Defaults are conservative and intended to be adjustable in-place.
-
-## Slicer Support
-
-Supported slicers:
-
-- OrcaSlicer
-- PrusaSlicer forks / clones that support the same style of custom machine G-code placeholders
-
-The intended entry macros are hidden on purpose:
-
-- `_ACE_ORCA_START`
-- `_ACE_ORCA_TOOLCHANGE`
-- `_ACE_ORCA_END_PRINT`
-
-This keeps the Mainsail macro panel focused on troubleshooting instead of print pipeline internals.
-
-## Orca / Prusa-Fork G-Code
-
-Use these in your printer preset.
-
-### Start G-code
-
-```gcode
-M400
-M220 S100
-M221 S100
-M104 S140
-M140 S[bed_temperature_initial_layer_single]
-G90
-
-M106 P2 S255
-M190 S[bed_temperature_initial_layer_single]
-M106 P2 S0
-
-_ACE_ORCA_START SLOT={initial_extruder + 1} TEMP=[nozzle_temperature_initial_layer]
-```
-
-### Change Filament G-code
-
-```gcode
-_ACE_ORCA_TOOLCHANGE SLOT={next_extruder + 1} TEMP={new_filament_temp} PURGE={flush_length}
-SET_PRINT_STATS_INFO CURRENT_LAYER={layer_num + 1}
-```
-
-### End G-code
-
-```gcode
-M400
-_ACE_ORCA_END_PRINT
-```
-
-Important:
-
-- if your slicer has both `Tool change G-code` and `Change filament G-code`, put the swap flow in `Change filament G-code`
-- leave slicer-native toolchange handling out of the way
-- `T0`..`T3` exist as safety aliases, but the slicer should call the `_ACE_ORCA_*` macros directly
-
-## Public Troubleshooting Macros
-
-These are the macros intended to stay visible and useful from the Mainsail panel:
-
-- `ACE_STATUS`
-- `ACE_SLOT_STATUS SLOT=1`
-- `ACE_SET_SENSOR_NAME NAME=runout`
-- `ACE_LOAD_TO_SENSOR SLOT=1`
-- `ACE_LOAD_TO_PRINTHEAD SLOT=1 LENGTH=20`
-- `ACE_UNLOAD_TO_SENSOR SLOT=1`
-- `ACE_RETRACT_SLOT SLOT=1`
-- `ACE_CLEAR_HUB SLOT=1`
-- `ACE_PROBE_SENSOR_IN SLOT=1`
-- `ACE_PROBE_SENSOR_OUT SLOT=1`
-- `ACE_SYNC_LOAD SLOT=1 LENGTH=20`
-- `ACE_PURGE LENGTH=20`
-- `ACE_WIPE`
-
-Useful manual sequences:
-
-Load to sensor, then push a bit past it:
-
-```gcode
-ACE_LOAD_TO_SENSOR SLOT=1
-ACE_LOAD_TO_PRINTHEAD SLOT=1 LENGTH=20
-```
-
-Unload back to the sensor:
-
-```gcode
-ACE_UNLOAD_TO_SENSOR SLOT=1
-```
-
-Clear the hub path after unload:
-
-```gcode
-ACE_CLEAR_HUB SLOT=1
-```
-
-## Current Behavior Notes
-
-- Start and toolchange flows are blocking.
-- Toolchanges use Orca’s `flush_length` as the purge amount.
-- Large purges are automatically split into chunks to stay below Klipper `max_extrude_only_distance`.
-- Hub clearing is handled after unload-to-sensor before the next slot is loaded.
-- The sensor controls the hub-to-sensor leg.
-- The sensor-to-printhead leg is distance-based, because there is no downstream sensor after the filament switch sensor.
-
-## Files You Will Actually Edit
-
-Usually only these:
-
-- `/etc/klipper/config/ace-addon.cfg`
-- your Orca / Prusa-fork printer preset
-
-You normally do not need to edit:
-
-- `ace-addon.py`
-- `ace-command.sh`
 
 ## Uninstall
 
@@ -254,7 +128,3 @@ cd /var/volatile/tmp/usb/sda1/CosmoACE-Integration
 ```sh
 ./create-package.sh
 ```
-
-Output:
-
-- `dist/cosmoace-integration-<timestamp>.tar.gz`
