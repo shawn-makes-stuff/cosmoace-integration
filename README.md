@@ -41,12 +41,12 @@ Set your gcode in OrcaSlicer:
 ## Install
 
 1. Copy this repository to a USB drive.
-2. SSH into the printer as `root`
+2. SSH into the printer as `root` (password: `OpenCentauri`).
 3. Run:
 
 ```sh
-# Navigate to your USB mount (path may vary, e.g., /var/volatile/tmp/usb/sda1)
-cd /var/volatile/tmp/usb/sda1/cosmoace-integration
+# Navigate to your USB mount (usually /user-resource/.tmp/ on Centauri)
+cd /user-resource/.tmp/cosmoace-integration
 chmod +x install.sh uninstall.sh
 ./install.sh
 ```
@@ -122,6 +122,6 @@ This is the distance from your filament sensor to the printhead. If too short, t
 ## Uninstall
 
 ```sh
-cd /var/volatile/tmp/usb/sda1/cosmoace-integration
+cd /user-resource/.tmp/cosmoace-integration
 ./uninstall.sh
 ```
