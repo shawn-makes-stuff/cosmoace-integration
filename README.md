@@ -41,7 +41,7 @@ Set your gcode in OrcaSlicer:
 ## Install
 
 1. Copy this repository to a USB drive.
-2. SSH into the printer as `root` (password: `OpenCentauri`).
+2. SSH into the printer as `root`
 3. Run:
 
 ```sh
