@@ -14,7 +14,6 @@ tar -C "${SCRIPT_DIR}" -czf "${DIST_DIR}/${PKG}" \
     README.md \
     files/ace-addon.py \
     files/ace-addon.conf \
-    files/ace-addon.init \
     files/ace-command.sh \
     files/ace_macros.cfg \
 
