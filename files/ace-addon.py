@@ -6,6 +6,7 @@ import configparser
 import glob
 import json
 import logging
+import logging.handlers
 import os
 import sys
 import threading
@@ -42,7 +43,10 @@ class AceTransport:
         self._resolved_port: Optional[str] = None
         self._ser = None
         self._io_lock = threading.Lock()
-        self._request_id = 0
+        # Seed from the PID: each CLI invocation is a fresh process, and a
+        # stale reply frame from a previous invocation must not match this
+        # process's ids (both would otherwise start at 0).
+        self._request_id = (os.getpid() % 3000) * 100
         self.last_error: Optional[str] = None
         self.last_tx: Optional[str] = None
         self.last_rx: Optional[str] = None
@@ -572,7 +576,7 @@ class AceController:
     @staticmethod
     def _normalize_stop_result(slot: int, result: Dict[str, Any], method_name: str) -> Dict[str, Any]:
         error = str(result.get("error", "")).strip().lower()
-        if result.get("ok", False) or error != "timeout waiting for frame header":
+        if result.get("ok", False) or not error.startswith("timeout waiting for frame header"):
             return result
         logging.warning(
             "%s for slot %s timed out waiting for a reply frame; assuming success",
@@ -1218,6 +1222,15 @@ class AceController:
                 return {"ok": False, "error": "stop_unwind requires slot 1..4 or index 0..3"}
             result = self.transport.rpc_call("stop_unwind_filament", {"index": slot})
             result = self._normalize_stop_result(slot, result, "stop_unwind_filament")
+        elif cmd == "assist_start":
+            if slot is None:
+                return {"ok": False, "error": "assist_start requires slot 1..4 or index 0..3"}
+            result = self.transport.rpc_call("start_feed_assist", {"index": slot})
+        elif cmd == "assist_stop":
+            if slot is None:
+                return {"ok": False, "error": "assist_stop requires slot 1..4 or index 0..3"}
+            result = self.transport.rpc_call("stop_feed_assist", {"index": slot})
+            result = self._normalize_stop_result(slot, result, "stop_feed_assist")
         elif cmd == "dry_start":
             temp_c = _int(params if "temp_c" in params else payload, "temp_c", self.default_dry_temp_c)
             minutes = _int(params if "minutes" in params else payload, "minutes", self.default_dry_minutes)
@@ -1327,7 +1340,7 @@ def configure_logging(cfg: configparser.ConfigParser) -> None:
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
     handlers = [
-        logging.FileHandler(log_path, encoding="utf-8"),
+        logging.handlers.RotatingFileHandler(log_path, maxBytes=1_000_000, backupCount=1, encoding="utf-8"),
     ]
     logging.basicConfig(
         level=logging.INFO,
@@ -1358,7 +1371,10 @@ def run_command(config_path: str, payload: Dict[str, Any]) -> int:
     controller = AceController(cfg)
     try:
         result = controller.execute(payload)
-        emit_json(result, always=False)
+        # Informational commands must print their result even on success;
+        # motion commands stay quiet unless they fail.
+        info_cmds = ("slot_status", "status_refresh")
+        emit_json(result, always=str(payload.get("cmd", "")).strip().lower() in info_cmds)
         return 0 if result.get("ok", False) else 1
     finally:
         controller.close()
@@ -1385,7 +1401,7 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="action")
 
     command_parser = subparsers.add_parser("command", help="Send one ACE command")
-    command_parser.add_argument("--cmd", required=True, help="feed|feed_wait|retract|retract_wait|feed_to_sensor|retract_to_sensor|wait_motion|clear_hub|stop|stop_unwind|dry_start|dry_stop|status_refresh|slot_status|assert_slot_ready|raw_method|set_serial")
+    command_parser.add_argument("--cmd", required=True, help="feed|feed_wait|retract|retract_wait|feed_to_sensor|retract_to_sensor|wait_motion|clear_hub|stop|stop_unwind|assist_start|assist_stop|dry_start|dry_stop|status_refresh|slot_status|assert_slot_ready|raw_method|set_serial")
     command_parser.add_argument("--slot", type=int, default=None, help="ACE user slot 1..4")
     command_parser.add_argument("--mm", type=int, default=None)
     command_parser.add_argument("--speed", type=int, default=None)

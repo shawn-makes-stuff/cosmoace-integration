@@ -20,7 +20,6 @@ Edit these in `/etc/klipper/config/ace-addon.cfg`.
 | `variable_load_to_sensor_search_mm` | `1200` | Max feed distance while searching for the sensor. |
 | `variable_load_to_printhead_mm` | `730` | **The value to tune**: distance from sensor to printhead. |
 | `variable_unload_to_sensor_search_mm` | `900` | Max retract distance while waiting for the sensor to clear. |
-| `variable_unload_chunk_mm` | `120` | Retract chunk size while unloading to the sensor. Each chunk is a completed ACE unwind, so the spool takes up slack between chunks. |
 | `variable_retract_past_sensor_mm` | `90` | Extra retract past the sensor to clear the hub path. |
 | `variable_feed_speed_mm_s` | `25` | ACE feed speed. |
 | `variable_retract_speed_mm_s` | `15` | ACE retract speed. |
@@ -37,14 +36,14 @@ Edit these in `/etc/klipper/config/ace-addon.cfg`.
 | `ACE_START` | Blocking print start: heat, home, recover leftovers, full load, purge, wipe. | `SLOT`, `BED`, `TEMP`, opt. `CHAMBER`, `PURGE` |
 | `ACE_END` | End of print: unload the active slot, then COSMOS `PRINT_END`. | none |
 | `T0`–`T3` | Toolchange during a print (cut → unload → clear hub → load → purge → resume). | opt. `TEMP`, `PURGE` |
-| `ACE_LOAD` | Full manual load of a slot: sensor → printhead → sync → purge → wipe. | `SLOT`, opt. `TEMP`, `PURGE` |
-| `ACE_UNLOAD` | Full manual unload: cut, retract past the sensor, clear the hub. Heats if needed. | opt. `SLOT` |
+| `ACE_LOAD` | Full manual load of a slot: sensor → printhead → sync → purge → wipe. Leaves ACE feed assist on for the slot. | `SLOT`, opt. `TEMP`, `PURGE` |
+| `ACE_UNLOAD` | Full manual unload: stop feed assist, cut, retract to the sensor, clear the hub. Heats if needed. | opt. `SLOT` |
 | `ACE_LOAD_TO_SENSOR` | Feed a slot until the sensor triggers. | `SLOT` |
 | `ACE_LOAD_TO_PRINTHEAD` | Push the pending slot from sensor to printhead. | opt. `SLOT`, `LENGTH` |
 | `ACE_UNLOAD_TO_SENSOR` | Retract until the sensor clears. | opt. `SLOT` |
 | `ACE_CLEAR_HUB` | Retract past the sensor until the hub path is confirmed clear. | opt. `SLOT` |
 | `ACE_SYNC_LOAD` | Feed ACE and extruder together through the hotend. | opt. `SLOT` |
-| `ACE_PURGE` | Purge at the tray (chunked to respect extrude limits). | opt. `LENGTH` |
+| `ACE_PURGE` | Purge at the tray in one move (macros raise max_extrude_only_distance to 1000mm). | opt. `LENGTH` |
 | `ACE_WIPE` | Flick the purge blob off at the tray (COSMOS `KICK`). | none |
 | `ACE_STATUS` | Print ACE mode, slots, and live sensor state. | none |
 | `ACE_SLOT_STATUS` | Query slot readiness from the ACE itself. | `SLOT` |

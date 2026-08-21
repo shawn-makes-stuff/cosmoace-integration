@@ -35,6 +35,8 @@ Everything else the macros need (`MOVE_TO_TRAY`, `KICK`, `PAUSE_BASE`, `RESUME_B
 
 You will need this filament hub adapter (or similar) which mounts to the Centauri Carbon's runout sensor:
 [Filament Hub Adapter (Printables)](https://www.printables.com/model/1662192-centauri-carbon-multi-material-filament-hub-4-colo)
+Note: potential pain point, filament can catch on the hub when feeding into/out of the sensor and mess up the feed to printhead move. 
+Need to come up a better design here.
 
 ### Modified ACE Cable
 You will need to either modify the 4-pin end of the ACE cable or build an adapter. Pins 3 and 4 need to be swapped.
@@ -104,13 +106,12 @@ The installer is idempotent — re-run it any time. It:
 
 ## Slicer Setup
 
-The whole slicer setup is three one-liners: `ACE_START ...` in machine start
+Slicer setup is three one-liners: `ACE_START ...` in machine start
 G-code, `T{next_extruder} PURGE={flush_length}` as the change-filament G-code,
-and `ACE_END` in machine end G-code. See the
-[OrcaSlicer G-Code Guide](docs/ORCA_GCODE.md).
-Macro reference and tuning variables: [ACE Macro Reference](docs/ACE_MACROS.md).
+and `ACE_END` in machine end G-code.
 
-I have also added an exported preset for ocaslicer, just import and print.
+I have also added an exported preset for Cosmo ACE, in ocaslicer.
+Import this, select machine preset, and tune any other machine settings as needed. (if you want)
 
 ## Required Tuning
 

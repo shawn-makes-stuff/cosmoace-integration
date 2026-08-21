@@ -7,7 +7,7 @@ ACE_CONFIG="${ACE_ADDON_CONFIG:-/user-resource/ace-addon/ace-addon.conf}"
 
 usage() {
     echo "Usage: $0 <cmd> [args...]"
-    echo "Commands: feed, feed-wait, retract, retract-wait, feed-to-sensor, retract-to-sensor, wait-motion, clear-hub, stop, stop-unwind, dry-start, dry-stop, status, status-refresh, slot-status, assert-slot-ready, set-serial, debug-cli"
+    echo "Commands: feed, feed-wait, retract, retract-wait, feed-to-sensor, retract-to-sensor, wait-motion, clear-hub, stop, stop-unwind, assist-start, assist-stop, dry-start, dry-stop, status, status-refresh, slot-status, assert-slot-ready, set-serial, debug-cli"
     exit 1
 }
 
@@ -72,6 +72,12 @@ case "${cmd}" in
         ;;
     stop-unwind)
         run_python_cmd "stop_unwind" --slot "${2:-1}"
+        ;;
+    assist-start)
+        run_python_cmd "assist_start" --slot "${2:-1}"
+        ;;
+    assist-stop)
+        run_python_cmd "assist_stop" --slot "${2:-1}"
         ;;
     dry-start)
         run_python_cmd "dry_start" --temp-c "${2:-45}" --minutes "${3:-240}" --fan-speed "${4:-7000}"
