@@ -12,6 +12,8 @@ tar -C "${SCRIPT_DIR}" -czf "${DIST_DIR}/${PKG}" \
     install.sh \
     uninstall.sh \
     README.md \
+    docs/ACE_MACROS.md \
+    docs/ORCA_GCODE.md \
     files/ace-addon.py \
     files/ace-addon.conf \
     files/ace-command.sh \

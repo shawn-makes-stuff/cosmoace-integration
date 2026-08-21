@@ -1,78 +1,123 @@
 #!/bin/sh
+# CosmoACE installer for COSMOS firmware (Elegoo Centauri Carbon).
+# Run as root on the printer:  sh install.sh
 set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 ADDON_DIR="/user-resource/ace-addon"
 KLIPPER_CONFIG_DIR="/etc/klipper/config"
-KLIPPER_READONLY_DIR="${KLIPPER_CONFIG_DIR}/klipper-readonly"
-KLIPPER_USER_MACROS_CFG="${KLIPPER_CONFIG_DIR}/ace-addon.cfg"
-KLIPPER_ADDON_CFG="${KLIPPER_READONLY_DIR}/ace-addon.cfg"
+PRINTER_CFG="${KLIPPER_CONFIG_DIR}/printer.cfg"
+MACROS_CFG="${KLIPPER_CONFIG_DIR}/ace-addon.cfg"
+BACKUP_DIR="${KLIPPER_CONFIG_DIR}/config-backups"
+INCLUDE_LINE="[include ace-addon.cfg]"
+SAVE_CONFIG_MARKER='^#\*# <-* SAVE_CONFIG -*>'
+STAMP="$(date +%Y%m%d_%H%M%S)"
 
 required_files="files/ace-addon.py files/ace-addon.conf files/ace-command.sh files/ace_macros.cfg"
 
-if [ "$(id -u)" -ne 0 ]; then
-    echo "Run as root."
+fail() {
+    echo "ERROR: $1" >&2
     exit 1
-fi
+}
+
+[ "$(id -u)" -eq 0 ] || fail "Run as root."
 
 for file in $required_files; do
-    if [ ! -f "${SCRIPT_DIR}/${file}" ]; then
-        echo "Missing ${file} in add-on directory."
-        exit 1
-    fi
+    [ -f "${SCRIPT_DIR}/${file}" ] || fail "Missing ${file} in add-on directory."
 done
 
-echo "Remounting root as RW..."
-mount -o remount,rw / || echo "Warning: Could not remount root as RW. Proceeding anyway..."
+# Sanity check: this must be a COSMOS printer.
+[ -f "$PRINTER_CFG" ] || fail "${PRINTER_CFG} not found. Is this a COSMOS install?"
+[ -x /etc/init.d/klipper ] || fail "/etc/init.d/klipper not found. Is this a COSMOS install?"
 
-# Stop and remove the old service if it exists
-if [ -f "/etc/init.d/ace-addon" ]; then
-    echo "Removing old service..."
-    if command -v service >/dev/null 2>&1; then
-        service ace-addon stop || true
+# CosmoACE and the built-in AFC/CANVAS support both register T0..T3 and
+# fight over toolchanges. Refuse to install alongside it.
+if command -v config-manager >/dev/null 2>&1; then
+    if [ "$(config-manager extras elegoo_canvas 2>/dev/null || echo False)" = "True" ]; then
+        fail "COSMOS 'elegoo_canvas' (AFC/CANVAS) is enabled in cosmos.conf. Disable it before installing CosmoACE."
     fi
-    rm -f /etc/init.d/ace-addon
-    rm -f /etc/rc*.d/S*ace-addon
-    rm -f /etc/rc*.d/K*ace-addon
 fi
 
-mkdir -p "$ADDON_DIR"
-mkdir -p "$KLIPPER_READONLY_DIR"
+# Clean up artifacts from older CosmoACE versions.
+rm -f "${KLIPPER_CONFIG_DIR}/klipper-readonly/ace-addon.cfg"   # wiped by COSMOS updates anyway
+if [ -f /etc/init.d/ace-addon ]; then
+    echo "Removing legacy ace-addon service..."
+    /etc/init.d/ace-addon stop 2>/dev/null || true
+    rm -f /etc/init.d/ace-addon /etc/rc*.d/S*ace-addon /etc/rc*.d/K*ace-addon
+fi
 
-echo "Copying files..."
+mkdir -p "$ADDON_DIR" "$BACKUP_DIR"
+
+echo "Installing add-on files to ${ADDON_DIR}..."
 cp "${SCRIPT_DIR}/files/ace-addon.py" "${ADDON_DIR}/ace-addon.py"
 cp "${SCRIPT_DIR}/files/ace-command.sh" "${ADDON_DIR}/ace-command.sh"
 cp "${SCRIPT_DIR}/files/ace_macros.cfg" "${ADDON_DIR}/ace_macros.default.cfg"
 chmod 0755 "${ADDON_DIR}/ace-addon.py" "${ADDON_DIR}/ace-command.sh"
 chmod 0644 "${ADDON_DIR}/ace_macros.default.cfg"
 
-if [ ! -f "${KLIPPER_USER_MACROS_CFG}" ]; then
-    echo "Installing default macro config..."
-    cp "${SCRIPT_DIR}/files/ace_macros.cfg" "${KLIPPER_USER_MACROS_CFG}"
-else
-    echo "Preserving existing macro config at ${KLIPPER_USER_MACROS_CFG}"
+# Keep the uninstaller at a stable path, independent of where this installer
+# was run from (USB stick, downloaded tarball, ...).
+if [ -f "${SCRIPT_DIR}/uninstall.sh" ]; then
+    cp "${SCRIPT_DIR}/uninstall.sh" "${ADDON_DIR}/uninstall.sh"
+    chmod 0755 "${ADDON_DIR}/uninstall.sh"
 fi
 
-chmod 0644 "${KLIPPER_USER_MACROS_CFG}"
-ln -sfn "${KLIPPER_USER_MACROS_CFG}" "${KLIPPER_ADDON_CFG}"
-
-if [ ! -f "${ADDON_DIR}/ace-addon.conf" ]; then
+# ace-addon.conf: keep the user's copy unless it still has settings that are
+# broken on current COSMOS (Moonraker port 7125, toolhead MCU tty, old sensor name).
+if [ -f "${ADDON_DIR}/ace-addon.conf" ]; then
+    if grep -qE '^[[:space:]]*url[[:space:]]*=.*:7125|^[[:space:]]*serial_port[[:space:]]*=[[:space:]]*/dev/ttyACM0[[:space:]]*$|^[[:space:]]*sensor_name[[:space:]]*=[[:space:]]*runout[[:space:]]*$' "${ADDON_DIR}/ace-addon.conf"; then
+        echo "Existing ace-addon.conf has settings incompatible with current COSMOS."
+        echo "Backing it up to ${ADDON_DIR}/ace-addon.conf.${STAMP}.bak and installing new defaults."
+        mv "${ADDON_DIR}/ace-addon.conf" "${ADDON_DIR}/ace-addon.conf.${STAMP}.bak"
+        cp "${SCRIPT_DIR}/files/ace-addon.conf" "${ADDON_DIR}/ace-addon.conf"
+    else
+        echo "Preserving existing ${ADDON_DIR}/ace-addon.conf"
+    fi
+else
     cp "${SCRIPT_DIR}/files/ace-addon.conf" "${ADDON_DIR}/ace-addon.conf"
 fi
 chmod 0644 "${ADDON_DIR}/ace-addon.conf"
 
-# Restart Klipper
-if command -v service >/dev/null 2>&1; then
-    echo "Restarting Klipper..."
-    service klipper restart || true
-elif command -v systemctl >/dev/null 2>&1; then
-    echo "Restarting Klipper..."
-    systemctl restart klipper || true
+# Macro config: old versions call M729 (now an emergency stop on COSMOS) and
+# the wrong sensor object, so an outdated file must not be preserved as-is.
+# (md5sum, not cmp: cmp is not a guaranteed busybox applet on this image.)
+if [ -f "$MACROS_CFG" ]; then
+    if [ "$(md5sum < "${SCRIPT_DIR}/files/ace_macros.cfg")" = "$(md5sum < "$MACROS_CFG")" ]; then
+        echo "Macro config already up to date."
+    else
+        echo "Backing up existing macro config to ${BACKUP_DIR}/ace-addon-${STAMP}.cfg"
+        echo "NOTE: re-apply your tuning (e.g. variable_load_to_printhead_mm) to the new ${MACROS_CFG}."
+        cp "$MACROS_CFG" "${BACKUP_DIR}/ace-addon-${STAMP}.cfg"
+        cp "${SCRIPT_DIR}/files/ace_macros.cfg" "$MACROS_CFG"
+    fi
+else
+    echo "Installing macro config to ${MACROS_CFG}"
+    cp "${SCRIPT_DIR}/files/ace_macros.cfg" "$MACROS_CFG"
+fi
+chmod 0644 "$MACROS_CFG"
+
+# Wire the macros into printer.cfg. The include must sit before any
+# SAVE_CONFIG autosave block, which has to stay at the end of the file.
+if grep -q '^\[include ace-addon\.cfg\]' "$PRINTER_CFG"; then
+    echo "printer.cfg already includes ace-addon.cfg"
+elif grep -q "$SAVE_CONFIG_MARKER" "$PRINTER_CFG"; then
+    echo "Adding ${INCLUDE_LINE} to printer.cfg (before SAVE_CONFIG block)..."
+    awk -v inc="$INCLUDE_LINE" '
+        /^#\*# <-* SAVE_CONFIG -*>/ && !done { print inc; print ""; done=1 }
+        { print }
+    ' "$PRINTER_CFG" > "${PRINTER_CFG}.tmp"
+    mv "${PRINTER_CFG}.tmp" "$PRINTER_CFG"
+else
+    echo "Adding ${INCLUDE_LINE} to printer.cfg..."
+    printf '\n%s\n' "$INCLUDE_LINE" >> "$PRINTER_CFG"
 fi
 
-echo "Remounting root as RO..."
-mount -o remount,ro / || echo "Warning: Could not remount root as RO."
+echo "Restarting Klipper..."
+/etc/init.d/klipper restart || echo "Warning: Klipper restart failed; restart it manually with: /etc/init.d/klipper restart"
 
-echo "ACE add-on (CLI) installed."
-echo "Configuration:      $ADDON_DIR/ace-addon.conf"
-echo "Editable macros:    $KLIPPER_USER_MACROS_CFG"
+echo ""
+echo "CosmoACE installed."
+echo "  Service config:  ${ADDON_DIR}/ace-addon.conf"
+echo "  Editable macros: ${MACROS_CFG}"
+echo "Tune variable_load_to_printhead_mm in ${MACROS_CFG} for your setup."
+echo "After a COSMOS factory reset, re-run this installer (files in /user-resource survive; /etc does not)."

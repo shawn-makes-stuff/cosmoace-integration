@@ -1,88 +1,69 @@
 # Orca Slicer G-Code
 
-Use these macros in OrcaSlicer or a PrusaSlicer-style fork.
+Use these in OrcaSlicer or a PrusaSlicer-style fork. The entire slicer setup
+is three one-liners — everything else lives in the printer-side macros.
 
-CosmoACE is designed for a blocking multicolor flow:
-
-1. Start on the selected slot.
-2. On color change, unload the current slot, clear the hub, load the next slot, push to the printhead, sync-load, purge, wipe, and resume.
-3. On end print, clear the active slot and reset ACE state.
-
-## Start G-Code
+## Machine Start G-Code
 
 ```gcode
-M400 ; wait for buffer to clear
-M220 S100 ; feed speed 100%
-M221 S100 ; flow rate 100%
-
-M104 S140 ; pre-heat nozzle
-M140 S[bed_temperature_initial_layer_single]
-G90
-
-M106 P2 S255
-M190 S[bed_temperature_initial_layer_single]
-M106 P2 S0
-
-_ACE_ORCA_START SLOT={initial_extruder + 1} TEMP=[nozzle_temperature_initial_layer]
+M400
+ACE_START SLOT={initial_extruder + 1} BED=[bed_temperature_initial_layer_single] TEMP=[nozzle_temperature_initial_layer]
 ```
+
+`ACE_START` heats the bed, homes (which loads the default bed mesh), recovers
+any leftover filament from an interrupted print, loads the slot to the sensor,
+pushes it to the printhead, sync-loads through the hotend, purges, and wipes.
+
+Optional parameters: `CHAMBER=<temp>` (waits for chamber temperature) and
+`PURGE=<mm>` (initial purge length, default `variable_purge_mm`).
 
 ## Change Filament G-Code
 
-Put the swap flow here, not in `Tool change G-code`.
-
 ```gcode
-_ACE_ORCA_TOOLCHANGE SLOT={next_extruder + 1} TEMP={new_filament_temp} PURGE={flush_length}
-SET_PRINT_STATS_INFO CURRENT_LAYER={layer_num + 1}
+T{next_extruder} PURGE={flush_length}
 ```
 
-## End G-Code
+The `T0`–`T3` macros route this into the blocking toolchange: cut, move to the
+purge tray, unload to the sensor, clear the hub, load the next slot to the
+sensor, push to the printhead, sync-load, purge, wipe, and resume where the
+print left off. `PURGE` is optional; without it the default purge length is
+used. Keep `Tool change G-code` empty.
+
+## Machine End G-Code
 
 ```gcode
-M400 ; wait for buffer to clear
-_ACE_ORCA_END_PRINT
-
-M140 S0 ; bed off
-M106 S255 ; cooling nozzle
-M83
-G92 E0
-G2 I1 J0 Z{max_layer_z+0.5} F3000
-G90
-{if max_layer_z > 50}G1 Z{min(max_layer_z+50, printable_height+0.5)} F20000{else}G1 Z100 F20000 {endif}
-M204 S5000
 M400
-G1 X202 F20000
-M400
-G1 Y250 F20000
-G1 Y264.5 F1200
-M400
-M104 S0
-M140 S0
-M106 S0
-M106 P2 S0
-M106 P3 S0
-M84
+ACE_END
 ```
+
+`ACE_END` cuts, unloads the active slot back past the hub, resets ACE state,
+and then runs the native COSMOS `PRINT_END` (park, heaters and fans off,
+steppers off). Do not add manual wipe moves or `M729` — on COSMOS `M729`
+triggers an emergency stop.
 
 ## Notes
 
-- Orca's `flush_length` is passed directly into `_ACE_ORCA_TOOLCHANGE`.
-- The slicer should call `_ACE_ORCA_*` macros directly.
-- Keep `Tool change G-code` empty if you are already using `Change Filament G-code`.
-- `initial_extruder` and `next_extruder` are used as Orca placeholder indices, so the macros add `+ 1` to match ACE slot numbers.
+- `initial_extruder` and `next_extruder` are 0-based; `ACE_START` takes 1-based
+  slots (hence the `+ 1`), while `T0`–`T3` already map T-number to slot 1–4.
+- If the slicer emits a redundant `T<n>` for the already-active slot, the
+  macro just reports "already active" and continues.
+- A cancelled print skips the end gcode, leaving filament loaded — the next
+  `ACE_START` detects this and unloads it automatically.
 
 ## Required Printer Setup
 
-Your printer config needs the filament sensor to call:
+None. The CosmoACE installer replaces the stock COSMOS
+`[filament_switch_sensor filament_sensor]` section with an ACE-aware version
+(same object name, same pin `PC0`). The COSMOS `PRINT_START`/`PAUSE`/`RESUME`
+macros keep working because the object name is unchanged.
 
-```cfg
-runout_gcode:
-  _ACE_SENSOR_EVENT EVENT=RUNOUT
-insert_gcode:
-  _ACE_SENSOR_EVENT EVENT=INSERT
-```
+If you move the sensor to a different object, update `variable_sensor_name`
+in `/etc/klipper/config/ace-addon.cfg` (macros) and `sensor_name` in
+`/user-resource/ace-addon/ace-addon.conf` (service).
 
-If your sensor object is not named `runout`, update `variable_sensor_name` in `/etc/klipper/config/ace-addon.cfg` or call:
+## Why not the stock COSMOS start/end gcode?
 
-```gcode
-ACE_SET_SENSOR_NAME NAME=your_sensor_name
-```
+The stock `PRINT_START` cancels the print when no filament is detected and
+line-purges before ACE could load anything — and CosmoACE unloads filament at
+the end of every print. A dedicated `ACE_START` entry point is therefore
+unavoidable; it performs the same essential steps with the load folded in.

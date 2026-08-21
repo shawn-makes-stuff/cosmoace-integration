@@ -196,6 +196,13 @@ class AceTransport:
                         timeout=self.command_timeout_s,
                         write_timeout=self.command_timeout_s,
                     )
+                    # Each CLI invocation restarts request ids at 0; drop any
+                    # stale frames a previous invocation left in the tty buffer
+                    # so they can't be matched against this process's requests.
+                    try:
+                        self._ser.reset_input_buffer()
+                    except Exception:
+                        pass
                     self.last_error = None
                     self.last_seen_unix = time.time()
                     return True
@@ -386,6 +393,12 @@ class AceTransport:
                 response = self._read_matching_response(int(req["id"]), self.rpc_timeout_s)
                 if not response.get("ok", False):
                     self.last_error = str(response.get("error", "rpc read failed"))
+                    # A partial/garbled frame leaves the tty mid-stream; drop what is
+                    # buffered so the next call starts on a frame boundary.
+                    try:
+                        self._ser.reset_input_buffer()
+                    except Exception:
+                        pass
                     return {"ok": False, "error": self.last_error}
                 parsed = response.get("response")
                 if not isinstance(parsed, dict):
@@ -457,7 +470,7 @@ def _float(payload: Dict[str, Any], key: str, fallback: float) -> float:
 
 class MoonrakerClient:
     def __init__(self, cfg: configparser.ConfigParser) -> None:
-        self.base_url = cfg.get("moonraker", "url", fallback="http://127.0.0.1:7125").strip().rstrip("/")
+        self.base_url = cfg.get("moonraker", "url", fallback="http://127.0.0.1").strip().rstrip("/")
         self.timeout_s = cfg.getfloat("moonraker", "timeout_s", fallback=3.0)
 
     def _request_json(
@@ -526,7 +539,7 @@ class AceController:
         self.feed_speed = cfg.getint("ace", "feed_speed", fallback=25)
         self.retract_speed = cfg.getint("ace", "retract_speed", fallback=15)
         self.dry_fan_speed = cfg.getint("ace", "dry_fan_speed", fallback=7000)
-        self.sensor_name = cfg.get("klipper", "sensor_name", fallback="runout").strip() or "runout"
+        self.sensor_name = cfg.get("klipper", "sensor_name", fallback="filament_sensor").strip() or "filament_sensor"
         self.last_ace_status: Optional[Dict[str, Any]] = None
         self.last_ace_status_unix: float = 0.0
         self.last_command: Optional[Dict[str, Any]] = None
@@ -1290,10 +1303,10 @@ def parse_config(path: str) -> configparser.ConfigParser:
                 "log_path": "/board-resource/ace-addon.log",
             },
             "klipper": {
-                "sensor_name": "runout",
+                "sensor_name": "filament_sensor",
             },
             "moonraker": {
-                "url": "http://127.0.0.1:7125",
+                "url": "http://127.0.0.1",
                 "timeout_s": "3.0",
             },
             "defaults": {
