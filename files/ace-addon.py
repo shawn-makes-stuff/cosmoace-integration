@@ -1404,6 +1404,26 @@ class AceDaemon:
             if payload.get("refresh"):
                 for ctl in self.units.values():
                     ctl.execute({"cmd": "status_refresh"})
+            # compact: slot data + defaults only, no transport debug. The full
+            # status with hex dumps is a ~15KB single line over the socket,
+            # which the gcode console truncates - the panel uses this instead.
+            if payload.get("compact"):
+                c0 = self.units[0]
+                return {"ok": True, "status": {
+                    "defaults": {
+                        "feed_mm": c0.default_feed_mm,
+                        "retract_mm": c0.default_retract_mm,
+                        "dry_temp_c": c0.default_dry_temp_c,
+                        "dry_minutes": c0.default_dry_minutes,
+                    },
+                    "units": {
+                        str(u): {
+                            "ace_status": c.last_ace_status,
+                            "connected": bool(c.transport._ser and c.transport._ser.is_open),
+                            "last_error": c.transport.last_error,
+                        } for u, c in self.units.items()
+                    },
+                }}
             status = self.units[0].status()
             if len(self.units) > 1:
                 status["units"] = {str(u): c.status() for u, c in self.units.items()}

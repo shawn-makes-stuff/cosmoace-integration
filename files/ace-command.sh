@@ -113,11 +113,18 @@ case "${cmd}" in
         # dry-stop <unit 0|1>
         run_cmd "{\"cmd\":\"dry_stop\",\"unit\":${2:-0}}" quiet command --cmd dry_stop --unit "${2:-0}"
         ;;
+    # status/status-refresh go through python on purpose: the full status is
+    # a huge single line over nc and the gcode console truncates it; python
+    # pretty-prints it as many small lines (and still asks the daemon first).
     status)
-        run_cmd "{\"action\":\"status\"}" always status
+        "${PYTHON_BIN}" "${ACE_SCRIPT}" --config "${ACE_CONFIG}" status
         ;;
     status-refresh)
-        run_cmd "{\"action\":\"status\",\"refresh\":true}" always status --refresh
+        "${PYTHON_BIN}" "${ACE_SCRIPT}" --config "${ACE_CONFIG}" status --refresh
+        ;;
+    panel-status)
+        # compact single-line status for the web panel (slots + defaults only)
+        run_cmd "{\"action\":\"status\",\"refresh\":true,\"compact\":true}" always status --refresh
         ;;
     slot-status)
         run_cmd "{\"cmd\":\"slot_status\",\"slot\":${2:-1}}" always command --cmd slot_status --slot "${2:-1}"

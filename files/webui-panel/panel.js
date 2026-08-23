@@ -158,7 +158,7 @@
                     var e = (r.result.gcode_store || [])[0]
                     t0 = e ? e.time : 0
                     return ctx.gcode(
-                        'RUN_SHELL_COMMAND CMD=ace_rpc PARAMS="status-refresh"')
+                        'RUN_SHELL_COMMAND CMD=ace_rpc PARAMS="panel-status"')
                 })
                 .then(function () { return pollStore(ctx, t0, Date.now() + 15000) })
                 .then(function (j) {
@@ -175,7 +175,8 @@
                     if (d.dry_temp_c) dryDefaults.t = d.dry_temp_c
                     if (d.dry_minutes) dryDefaults.m = d.dry_minutes
                     if (!ace)
-                        err = (st.transport && st.transport.last_error) ||
+                        err = (st.units && st.units['0'] && st.units['0'].last_error) ||
+                            (st.transport && st.transport.last_error) ||
                             j.error || 'ACE not responding'
                 })
                 .catch(function (e) { ace = null; aces = []; err = e.message || String(e) })
@@ -434,6 +435,7 @@
                 '.cosmoace-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}' +
                 '.cosmoace-dryer{border-top:1px solid rgba(128,128,128,.18);' +
                 'padding-top:10px;margin-top:2px}' +
+                '.cosmoace-dryer+.cosmoace-dryer{margin-top:12px}' +
                 '.cosmoace-dtitle{font-size:.82rem;margin-bottom:8px}' +
                 '.cosmoace-dtitle b{font-weight:500}' +
                 '.cosmoace-btn{padding:3px 10px;font-size:.72rem;border-radius:4px;' +
