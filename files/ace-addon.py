@@ -377,51 +377,65 @@ class AceTransport:
     def rpc_call(self, method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         if not method:
             return {"ok": False, "error": "rpc method required"}
-        if not self.connect():
-            return {"ok": False, "error": self.last_error or "not connected"}
-        assert self._ser is not None
 
-        req: Dict[str, Any] = {"id": self._next_id(), "method": method}
-        if params:
-            req["params"] = params
-        payload = json.dumps(req, separators=(",", ":")).encode("utf-8")
-        frame = self._build_frame(payload)
+        # The ACE has a ~3.5s comms watchdog: with no complete frame it drops
+        # its USB link and re-enumerates (~0.5s gap). A call landing in that
+        # gap fails with an I/O error before the frame went through, so
+        # reconnect once and resend. Read-side protocol failures (timeouts,
+        # bad frames) are NOT retried: the command may already be executing
+        # and a resend would double the motion.
+        for attempt in range(2):
+            if not self.connect():
+                if attempt == 0:
+                    continue
+                return {"ok": False, "error": self.last_error or "not connected"}
+            assert self._ser is not None
 
-        with self._io_lock:
-            try:
-                self._ser.write(frame)
-                self._ser.flush()
-                self.last_tx_hex = frame.hex()
-                self.last_tx = self._bytes_to_ascii_safe(payload)
-                self.last_seen_unix = time.time()
-                response = self._read_matching_response(int(req["id"]), self.rpc_timeout_s)
-                if not response.get("ok", False):
-                    self.last_error = str(response.get("error", "rpc read failed"))
-                    # A partial/garbled frame leaves the tty mid-stream; drop what is
-                    # buffered so the next call starts on a frame boundary.
-                    try:
-                        self._ser.reset_input_buffer()
-                    except Exception:
-                        pass
+            req: Dict[str, Any] = {"id": self._next_id(), "method": method}
+            if params:
+                req["params"] = params
+            payload = json.dumps(req, separators=(",", ":")).encode("utf-8")
+            frame = self._build_frame(payload)
+
+            with self._io_lock:
+                try:
+                    self._ser.write(frame)
+                    self._ser.flush()
+                    self.last_tx_hex = frame.hex()
+                    self.last_tx = self._bytes_to_ascii_safe(payload)
+                    self.last_seen_unix = time.time()
+                    response = self._read_matching_response(int(req["id"]), self.rpc_timeout_s)
+                    if not response.get("ok", False):
+                        self.last_error = str(response.get("error", "rpc read failed"))
+                        # A partial/garbled frame leaves the tty mid-stream; drop what is
+                        # buffered so the next call starts on a frame boundary.
+                        try:
+                            self._ser.reset_input_buffer()
+                        except Exception:
+                            pass
+                        return {"ok": False, "error": self.last_error}
+                    parsed = response.get("response")
+                    if not isinstance(parsed, dict):
+                        return {"ok": False, "error": "rpc response is not a JSON object"}
+                    ace_error = AceController._rpc_code_error(method, parsed)
+                    if ace_error:
+                        self.last_error = ace_error
+                        return {
+                            "ok": False,
+                            "error": ace_error,
+                            "request": req,
+                            "response": parsed,
+                        }
+                    self.last_error = None
+                    return {"ok": True, "request": req, "response": parsed}
+                except Exception as exc:
+                    self.last_error = f"rpc failed: {exc}"
+                    self.disconnect()
+                    if attempt == 0:
+                        logging.warning("rpc %s hit '%s'; reconnecting and resending", method, exc)
+                        continue
                     return {"ok": False, "error": self.last_error}
-                parsed = response.get("response")
-                if not isinstance(parsed, dict):
-                    return {"ok": False, "error": "rpc response is not a JSON object"}
-                ace_error = AceController._rpc_code_error(method, parsed)
-                if ace_error:
-                    self.last_error = ace_error
-                    return {
-                        "ok": False,
-                        "error": ace_error,
-                        "request": req,
-                        "response": parsed,
-                    }
-                self.last_error = None
-                return {"ok": True, "request": req, "response": parsed}
-            except Exception as exc:
-                self.last_error = f"rpc failed: {exc}"
-                self.disconnect()
-                return {"ok": False, "error": self.last_error}
+        return {"ok": False, "error": self.last_error or "rpc failed"}
 
     def reconfigure(self, port: Optional[str], baudrate: Optional[int]) -> Dict[str, Any]:
         if port:
