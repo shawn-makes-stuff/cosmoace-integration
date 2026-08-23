@@ -13,16 +13,10 @@ CosmoACE installs:
 - a Python-based ACE CLI tool (talks the ACE framed JSON-RPC protocol over USB serial)
 - a shell wrapper Klipper calls via `gcode_shell_command`
 - a Klipper macro set for blocking start, toolchange, and end-print flows
-- an "ACE Pro" Mainsail dashboard panel (slot colors/materials, dryer
-  controls, OrcaSlicer AMS sync via `lane_data`). On COSMOS builds that
-  ship the Mainsail Panel Extender the panel just registers itself; on
-  builds without it, the installer also deploys a bundled copy of the
-  loader, served through a union webroot at `/etc/webui` using moonraker's
-  existing static file serving — no system files are modified, and the
-  setup hands over automatically if a later COSMOS build ships the
-  extender natively. Skipped entirely if Mainsail isn't installed. New
-  panels dropped into `/user-resource/webui-addons/panels/` are picked up
-  at boot (or after `/etc/init.d/cosmoace-webui start`).
+- an "ACE Pro" Mainsail dashboard panel (skipped if not using Mainsail)
+<img width="438" height="299" alt="image" src="https://github.com/user-attachments/assets/814cb587-f0f3-4201-95f9-11d421ea3524" />
+<BR>
+<br>
 
 The supported print flow is:
 1. Load the selected slot until the filament sensor triggers.
@@ -45,8 +39,6 @@ Everything else the macros need (`MOVE_TO_TRAY`, `KICK`, `PAUSE_BASE`, `RESUME_B
 
 You will need this filament hub adapter (or similar) which mounts to the Centauri Carbon's runout sensor:
 [Filament Hub Adapter (Printables)](https://www.printables.com/model/1662192-centauri-carbon-multi-material-filament-hub-4-colo)
-Note: potential pain point, filament can catch on the hub when feeding into/out of the sensor and mess up the feed to printhead move. 
-Need to come up a better design here.
 
 ### Modified ACE Cable
 You will need to either modify the 4-pin end of the ACE cable or build an adapter. Pins 3 and 4 need to be swapped.
