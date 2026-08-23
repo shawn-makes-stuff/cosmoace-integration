@@ -1,0 +1,46 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          ace-keepalive
+# Required-Start:
+# Required-Stop:
+# Default-Start:     2 3 4 5
+# Default-Stop:
+# Short-Description: Keep the ACE USB link alive (it drops itself after
+#                    ~3.5s without a frame, killing feed assist mid-print)
+### END INIT INFO
+#
+# A shell loop, not a service that owns the port: commands still talk to the
+# ACE directly through ace-command.sh. Stopping this only costs feed assist
+# and brings back the periodic USB re-enumeration.
+
+SCRIPT=/user-resource/ace-addon/ace-keepalive.sh
+PIDFILE=/var/run/ace-keepalive.pid
+
+case "$1" in
+    start)
+        [ -x "$SCRIPT" ] || exit 0
+        start-stop-daemon -S -b -m -p "$PIDFILE" -x /bin/sh -- "$SCRIPT"
+        ;;
+    stop)
+        start-stop-daemon -K -p "$PIDFILE" 2>/dev/null || true
+        rm -f "$PIDFILE"
+        ;;
+    restart|force-reload)
+        "$0" stop
+        sleep 1
+        "$0" start
+        ;;
+    status)
+        if [ -f "$PIDFILE" ] && [ -d "/proc/$(cat "$PIDFILE")" ]; then
+            echo "ace-keepalive running (pid $(cat "$PIDFILE"))"
+        else
+            echo "ace-keepalive not running"
+            exit 1
+        fi
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status}"
+        exit 1
+        ;;
+esac
+exit 0

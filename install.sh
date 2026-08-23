@@ -13,7 +13,7 @@ INCLUDE_LINE="[include ace-addon.cfg]"
 SAVE_CONFIG_MARKER='^#\*# <-* SAVE_CONFIG -*>'
 STAMP="$(date +%Y%m%d_%H%M%S)"
 
-required_files="files/ace-addon.py files/ace-addon.conf files/ace-command.sh files/ace_macros.cfg files/cosmoace-daemon-init"
+required_files="files/ace-addon.py files/ace-addon.conf files/ace-command.sh files/ace_macros.cfg files/ace-keepalive.sh files/ace-keepalive-init"
 
 fail() {
     echo "ERROR: $1" >&2
@@ -62,16 +62,23 @@ if [ -f "${SCRIPT_DIR}/uninstall.sh" ]; then
     chmod 0755 "${ADDON_DIR}/uninstall.sh"
 fi
 
-# Daemon service: holds the ACE serial port open and heartbeats it so the
-# ACE's ~3.5s comms watchdog never drops the USB link mid-command. The CLI
-# falls back to direct serial when the daemon is down.
-echo "Installing CosmoACE daemon service..."
-cp "${SCRIPT_DIR}/files/cosmoace-daemon-init" /etc/init.d/cosmoace-daemon
-chmod 0755 /etc/init.d/cosmoace-daemon
+# Keep-alive poller: a shell loop that writes one frame to each ACE every
+# 2s, because the ACE drops its USB link ~3.5s after the last frame and that
+# would clear feed assist mid-print. Commands still talk to the ACE directly.
+echo "Installing ACE keep-alive service..."
+cp "${SCRIPT_DIR}/files/ace-keepalive.sh" "${ADDON_DIR}/ace-keepalive.sh"
+chmod 0755 "${ADDON_DIR}/ace-keepalive.sh"
+cp "${SCRIPT_DIR}/files/ace-keepalive-init" /etc/init.d/ace-keepalive
+chmod 0755 /etc/init.d/ace-keepalive
 for rl in 2 3 4 5; do
-    [ -d "/etc/rc${rl}.d" ] && ln -sf ../init.d/cosmoace-daemon "/etc/rc${rl}.d/S98cosmoace-daemon"
+    [ -d "/etc/rc${rl}.d" ] && ln -sf ../init.d/ace-keepalive "/etc/rc${rl}.d/S98ace-keepalive"
 done
-/etc/init.d/cosmoace-daemon restart
+# Remove the daemon this replaces, if an older install left it behind.
+if [ -f /etc/init.d/cosmoace-daemon ]; then
+    /etc/init.d/cosmoace-daemon stop 2>/dev/null || true
+    rm -f /etc/init.d/cosmoace-daemon /etc/rc*.d/S*cosmoace-daemon /var/run/cosmoace.sock
+fi
+/etc/init.d/ace-keepalive restart
 
 # Mainsail dashboard panel. On COSMOS builds that ship the Mainsail Panel
 # Extender, installing the panel file is all that's needed. On builds
@@ -101,10 +108,12 @@ elif [ -f "${SCRIPT_DIR}/files/webui-panel/panel.js" ]; then
     fi
 fi
 
-# ace-addon.conf: keep the user's copy unless it still has settings that are
-# broken on current COSMOS (Moonraker port 7125, toolhead MCU tty, old sensor name).
+# ace-addon.conf: keep the user's copy unless it has settings that are broken
+# on current COSMOS (Moonraker port 7125, toolhead MCU tty, old sensor name) or
+# is left over from the daemon build, whose [daemon] section is dead and whose
+# pinned serial_port would disable multi-ACE auto-detection.
 if [ -f "${ADDON_DIR}/ace-addon.conf" ]; then
-    if grep -qE '^[[:space:]]*url[[:space:]]*=.*:7125|^[[:space:]]*serial_port[[:space:]]*=[[:space:]]*/dev/ttyACM0[[:space:]]*$|^[[:space:]]*sensor_name[[:space:]]*=[[:space:]]*runout[[:space:]]*$' "${ADDON_DIR}/ace-addon.conf"; then
+    if grep -qE '^[[:space:]]*url[[:space:]]*=.*:7125|^[[:space:]]*serial_port[[:space:]]*=[[:space:]]*/dev/ttyACM0[[:space:]]*$|^[[:space:]]*sensor_name[[:space:]]*=[[:space:]]*runout[[:space:]]*$|^[[:space:]]*\[daemon\]' "${ADDON_DIR}/ace-addon.conf"; then
         echo "Existing ace-addon.conf has settings incompatible with current COSMOS."
         echo "Backing it up to ${ADDON_DIR}/ace-addon.conf.${STAMP}.bak and installing new defaults."
         mv "${ADDON_DIR}/ace-addon.conf" "${ADDON_DIR}/ace-addon.conf.${STAMP}.bak"
@@ -156,7 +165,9 @@ echo "Restarting Klipper..."
 
 echo ""
 echo "CosmoACE installed."
-echo "  Service config:  ${ADDON_DIR}/ace-addon.conf"
+echo "  Addon config:    ${ADDON_DIR}/ace-addon.conf"
 echo "  Editable macros: ${MACROS_CFG}"
+echo "  Keep-alive:      /etc/init.d/ace-keepalive (status|restart)"
 echo "Tune variable_load_to_printhead_mm in ${MACROS_CFG} for your setup."
+echo "A second chained ACE is auto-detected as slots 5-8 (T4-T7) - no config."
 echo "After a COSMOS factory reset, re-run this installer (files in /user-resource survive; /etc does not)."

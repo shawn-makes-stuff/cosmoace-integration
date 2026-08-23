@@ -1,5 +1,6 @@
 #!/bin/env python3
-"""ACE addon service with Anycubic ACE framed JSON RPC transport."""
+"""ACE addon CLI: one short-lived process per command, speaking the
+Anycubic ACE framed JSON RPC protocol over serial."""
 
 import argparse
 import configparser
@@ -8,8 +9,7 @@ import json
 import logging
 import logging.handlers
 import os
-import signal
-import socket
+import re
 import sys
 import threading
 import time
@@ -24,7 +24,70 @@ except Exception:  # pragma: no cover
     serial = None
 
 DEFAULT_CONFIG_PATH = "/user-resource/ace-addon/ace-addon.conf"
-DEFAULT_SOCKET_PATH = "/var/run/cosmoace.sock"
+
+
+def unit_section(unit: int) -> str:
+    """Config section for an ACE unit: 0 -> [ace], 1 -> [ace2]."""
+    return "ace" if unit == 0 else "ace%d" % (unit + 1)
+
+
+def cfg_value(cfg: configparser.ConfigParser, section: str, key: str, getter: str, fallback: Any) -> Any:
+    """Read a per-unit tuning key, falling back to [ace] so a second unit only
+    has to declare serial_port, then to the hardcoded default."""
+    for sect in (section, "ace"):
+        if cfg.has_option(sect, key):
+            try:
+                return getattr(cfg, getter)(sect, key)
+            except ValueError:
+                break
+    return fallback
+
+
+def route_payload(payload: Dict[str, Any]) -> int:
+    """Map a user slot (1-8) or raw index (0-7) onto an ACE unit, rewriting the
+    payload to that unit's local numbering. Slot-less commands (dryer, raw
+    methods) carry an explicit "unit" instead."""
+    containers = [payload]
+    if isinstance(payload.get("params"), dict):
+        containers.append(payload["params"])
+    for c in containers:
+        if c.get("index") is not None:
+            idx = int(c["index"])
+            if not 0 <= idx <= 7:
+                raise ValueError("index must be 0..7")
+            c["index"] = idx % 4
+            return idx // 4
+        if c.get("slot") is not None:
+            slot = int(c["slot"])
+            if not 1 <= slot <= 8:
+                raise ValueError("slot must be 1..8")
+            c["slot"] = ((slot - 1) % 4) + 1
+            return (slot - 1) // 4
+    return int(payload.get("unit", 0) or 0)
+
+
+def _usb_path_key(path: str) -> list:
+    """Sort key that orders 1-1.4.3 before 1-1.4.10 (digits numerically)."""
+    return [int(p) if p.isdigit() else p for p in re.split(r"(\d+)", path)]
+
+
+def ace_serial_ports() -> list:
+    """Every ACE's tty, in stable USB-topology order.
+
+    Found by USB product string, not device name: chained ACEs all report the
+    same by-id name so /dev/serial/by-id can only show one of them, and
+    ttyACM numbering shifts between boots. Matching the product also means we
+    can never hand back the printer's own MCU port. The directly connected
+    unit sorts first, so it is always slots 1-4.
+    """
+    found = []
+    for dev in glob.glob("/sys/bus/usb/devices/*/"):
+        if "ACE" not in read_text(os.path.join(dev, "product")).upper():
+            continue
+        for tty in glob.glob(os.path.join(dev, "*", "tty", "tty*")):
+            found.append((dev, "/dev/" + os.path.basename(tty)))
+    found.sort(key=lambda item: _usb_path_key(item[0]))
+    return [port for _, port in found]
 
 
 def read_text(path: str, default: str = "") -> str:
@@ -38,15 +101,17 @@ def read_text(path: str, default: str = "") -> str:
 class AceTransport:
     def __init__(self, cfg: configparser.ConfigParser, section: str = "ace") -> None:
         self.section = section
-        self.port = cfg.get(section, "serial_port", fallback="auto").strip() or "auto"
-        self.baudrate = cfg.getint(section, "baudrate", fallback=115200)
-        self.command_timeout_s = cfg.getfloat(section, "command_timeout_s", fallback=2.0)
-        self.rpc_timeout_s = cfg.getfloat(section, "rpc_timeout_s", fallback=5.0)
-        self.read_idle_s = cfg.getfloat(section, "read_idle_s", fallback=0.08)
-        self.read_max_bytes = cfg.getint(section, "read_max_bytes", fallback=4096)
-        # Bumped on every fresh serial open; the daemon reconciles desired
-        # state (feed assist) when it sees the generation change.
-        self.connect_generation = 0
+        self.unit = 0 if section == "ace" else int(section[3:]) - 1
+        # A unit found on USB may have no config section at all; "auto" then
+        # resolves it by USB topology. (configparser.get raises on a missing
+        # section even with a fallback, so check first.)
+        raw_port = cfg.get(section, "serial_port", fallback="auto") if cfg.has_section(section) else "auto"
+        self.port = raw_port.strip() or "auto"
+        self.baudrate = cfg_value(cfg, section, "baudrate", "getint", 115200)
+        self.command_timeout_s = cfg_value(cfg, section, "command_timeout_s", "getfloat", 2.0)
+        self.rpc_timeout_s = cfg_value(cfg, section, "rpc_timeout_s", "getfloat", 5.0)
+        self.read_idle_s = cfg_value(cfg, section, "read_idle_s", "getfloat", 0.08)
+        self.read_max_bytes = cfg_value(cfg, section, "read_max_bytes", "getint", 4096)
         self._resolved_port: Optional[str] = None
         self._ser = None
         self._io_lock = threading.Lock()
@@ -181,6 +246,24 @@ class AceTransport:
         if self.port.lower() != "auto":
             self._resolved_port = self.port
             return self._resolved_port
+
+        # Preferred: pick this unit's ACE out of the USB tree by product
+        # string. Handles a single ACE and a chained pair with no config at
+        # all, and cannot pick the printer's MCU port by mistake.
+        ace_ports = ace_serial_ports()
+        if len(ace_ports) > self.unit:
+            self._resolved_port = ace_ports[self.unit]
+            return self._resolved_port
+        if self.unit > 0:
+            self._resolved_port = None
+            self.last_error = (
+                "ACE unit %d not found: %d ACE device(s) on USB. Check it is "
+                "powered and chained to the first unit." % (self.unit + 1, len(ace_ports))
+            )
+            return None
+
+        # Fall back to the free-port scan for a lone unit whose firmware does
+        # not report "ACE" as its USB product string.
         scan = self._scan_serial_ports()
         free = scan.get("free_candidates", [])
         if not free:
@@ -201,8 +284,8 @@ class AceTransport:
             target_port = self._resolve_target_port()
             if target_port:
                 try:
-                    # exclusive: flock the tty so the daemon and a direct-serial
-                    # CLI can never talk over each other - the loser gets a
+                    # exclusive: flock the tty so a command and the keep-alive
+                    # poller can never talk over each other - the loser gets a
                     # clean "port busy" error instead of corrupted frames.
                     try:
                         self._ser = serial.Serial(
@@ -226,7 +309,6 @@ class AceTransport:
                         self._ser.reset_input_buffer()
                     except Exception:
                         pass
-                    self.connect_generation += 1
                     self.last_error = None
                     self.last_seen_unix = time.time()
                     return True
@@ -385,9 +467,6 @@ class AceTransport:
     def _bytes_to_ascii_safe(data: bytes) -> str:
         return data.decode("ascii", errors="backslashreplace")
 
-    @staticmethod
-    def _clean_hex(value: str) -> str:
-        return "".join(ch for ch in value if ch not in " \t\r\n:")
 
     def _next_id(self) -> int:
         current = self._request_id
@@ -457,16 +536,6 @@ class AceTransport:
                     return {"ok": False, "error": self.last_error}
         return {"ok": False, "error": self.last_error or "rpc failed"}
 
-    def reconfigure(self, port: Optional[str], baudrate: Optional[int]) -> Dict[str, Any]:
-        if port:
-            self.port = port
-            self._resolved_port = None
-        if baudrate:
-            self.baudrate = baudrate
-        self.disconnect()
-        if not self.connect():
-            return {"ok": False, "error": self.last_error or "connect failed"}
-        return {"ok": True, "transport": self.status()}
 
     def status(self) -> Dict[str, Any]:
         connected = bool(self._ser and self._ser.is_open)
@@ -575,13 +644,13 @@ class AceController:
         self.default_retract_mm = cfg.getint("defaults", "retract_mm", fallback=90)
         self.default_dry_temp_c = cfg.getint("defaults", "dry_temp_c", fallback=45)
         self.default_dry_minutes = cfg.getint("defaults", "dry_minutes", fallback=240)
-        self.feed_speed = cfg.getint(section, "feed_speed", fallback=50)
-        self.retract_speed = cfg.getint(section, "retract_speed", fallback=75)
+        self.feed_speed = cfg_value(cfg, section, "feed_speed", "getint", 50)
+        self.retract_speed = cfg_value(cfg, section, "retract_speed", "getint", 75)
         # unwind_filament mode: 0 = normal, 1 = "enhanced" (undocumented;
         # believed to drive the spool take-up harder - the rollers rewind
         # slower than the feed gear retracts, piling up slack).
-        self.retract_mode = cfg.getint(section, "retract_mode", fallback=0)
-        self.dry_fan_speed = cfg.getint(section, "dry_fan_speed", fallback=7000)
+        self.retract_mode = cfg_value(cfg, section, "retract_mode", "getint", 0)
+        self.dry_fan_speed = cfg_value(cfg, section, "dry_fan_speed", "getint", 7000)
         self.sensor_name = cfg.get("klipper", "sensor_name", fallback="filament_sensor").strip() or "filament_sensor"
         self.last_ace_status: Optional[Dict[str, Any]] = None
         self.last_ace_status_unix: float = 0.0
@@ -629,17 +698,6 @@ class AceController:
             "original_error": result.get("error"),
         }
 
-    @staticmethod
-    def _optional_int(value: Any) -> Optional[int]:
-        if isinstance(value, bool):
-            return None
-        if isinstance(value, int):
-            return value
-        if isinstance(value, str):
-            stripped = value.strip()
-            if stripped and stripped.lstrip("-").isdigit():
-                return int(stripped)
-        return None
 
     def _update_status_cache(self, result: Dict[str, Any]) -> None:
         parsed = result.get("response")
@@ -1007,16 +1065,6 @@ class AceController:
                 wait_result = self._wait_for_motion_complete(slot, timeout_s)
                 if not wait_result.get("ok", False):
                     result = wait_result
-        elif cmd == "retract":
-            if slot is None:
-                return {"ok": False, "error": "retract requires slot 1..4 or index 0..3"}
-            mm = _int(params if "mm" in params else payload, "mm", self.default_retract_mm)
-            speed = _int(params if "speed" in params else payload, "speed", self.retract_speed)
-            mode = _int(params if "mode" in params else payload, "mode", self.retract_mode)
-            result = self.transport.rpc_call(
-                "unwind_filament",
-                {"index": slot, "length": mm, "speed": speed, "mode": mode},
-            )
         elif cmd == "retract_wait":
             if slot is None:
                 return {"ok": False, "error": "retract_wait requires slot 1..4 or index 0..3"}
@@ -1289,16 +1337,6 @@ class AceController:
             if slot is None:
                 return {"ok": False, "error": "slot_status requires slot 1..4 or index 0..3"}
             result = self._get_slot_status(slot, refresh=True)
-        elif cmd == "assert_slot_ready":
-            if slot is None:
-                return {"ok": False, "error": "assert_slot_ready requires slot 1..4 or index 0..3"}
-            result = self._get_slot_status(slot, refresh=True)
-            if result.get("ok", False) and result.get("slot_status") != "ready":
-                result = {
-                    "ok": False,
-                    "error": f"ACE slot {slot + 1} is not ready (status={result.get('slot_status') or 'unknown'})",
-                    "slot_status": result,
-                }
         elif cmd == "raw_method":
             method = str(params.get("method") or payload.get("method", "")).strip()
             raw_params = params.get("params") or payload.get("params")
@@ -1308,15 +1346,6 @@ class AceController:
                 return {"ok": False, "error": "raw_method params must be object"}
             result = self.transport.rpc_call(method, raw_params if isinstance(raw_params, dict) else None)
             extra_command_fields["method"] = method
-        elif cmd == "set_serial":
-            port = params.get("port") or payload.get("port")
-            baudrate = self._optional_int(params.get("baudrate") or payload.get("baudrate"))
-            result = self.transport.reconfigure(
-                str(port).strip() if isinstance(port, str) and port.strip() else None,
-                baudrate,
-            )
-            extra_command_fields["port"] = port
-            extra_command_fields["baudrate"] = baudrate
         else:
             return {"ok": False, "error": f"unsupported cmd '{cmd}'"}
 
@@ -1339,311 +1368,6 @@ class AceController:
             "ace_status_unix": self.last_ace_status_unix,
             "last_command": self.last_command,
         }
-
-
-class AceDaemon:
-    """Owns the ACE serial port(s), heartbeats them so the ~3.5s comms
-    watchdog never fires, reconciles desired state (feed assist) after any
-    reconnect, and serves the same command payloads the CLI builds over a
-    unix socket.
-
-    Units: [ace] = unit 0 (user slots 1-4), [ace2] = unit 1 (user slots 5-8).
-    """
-
-    # One motion command at a time per unit. Stop commands and pure reads
-    # bypass the lock: stops are emergencies, reads are frame-safe (the
-    # transport io_lock serializes whole transactions).
-    UNLOCKED_CMDS = {"stop", "stop_unwind", "slot_status", "status_refresh", "assert_slot_ready"}
-
-    def __init__(self, cfg: configparser.ConfigParser) -> None:
-        self.cfg = cfg
-        self.socket_path = cfg.get("daemon", "socket_path", fallback=DEFAULT_SOCKET_PATH)
-        # Loopback TCP for the busybox-nc thin client (no python startup per
-        # macro call). 0 disables. Localhost-only, root-only box.
-        self.tcp_port = cfg.getint("daemon", "tcp_port", fallback=7877)
-        self.heartbeat_s = cfg.getfloat("daemon", "heartbeat_s", fallback=1.5)
-        self.units: Dict[int, AceController] = {0: AceController(cfg, "ace")}
-        if cfg.has_section("ace2"):
-            self.units[1] = AceController(cfg, "ace2")
-        self.cmd_locks = {u: threading.Lock() for u in self.units}
-        self.desired_assist: Dict[int, Optional[int]] = {u: None for u in self.units}
-        self.reconciled_generation = {u: -1 for u in self.units}
-        self.stop_event = threading.Event()
-
-    def _route(self, payload: Dict[str, Any]) -> int:
-        """Map user slot 1-8 / index 0-7 to a unit, rewriting the payload's
-        slot/index to that unit's local numbering. No slot -> unit 0, or an
-        explicit "unit" key (dry_start etc. on the second ACE)."""
-        containers = [payload]
-        if isinstance(payload.get("params"), dict):
-            containers.append(payload["params"])
-        for c in containers:
-            if c.get("index") is not None:
-                idx = int(c["index"])
-                if not 0 <= idx <= 7:
-                    raise ValueError("index must be 0..7")
-                unit, c["index"] = idx // 4, idx % 4
-                break
-            if c.get("slot") is not None:
-                slot = int(c["slot"])
-                if not 1 <= slot <= 8:
-                    raise ValueError("slot must be 1..8")
-                unit, c["slot"] = (slot - 1) // 4, ((slot - 1) % 4) + 1
-                break
-        else:
-            unit = int(payload.get("unit", 0))
-        if unit not in self.units:
-            raise ValueError(f"slot maps to ACE unit {unit + 1} but section [ace2] is not configured")
-        return unit
-
-    def handle(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        action = str(payload.get("action", "")).strip().lower()
-        if action == "ping":
-            return {"ok": True, "pong": True, "units": sorted(self.units)}
-        if action == "status":
-            if payload.get("refresh"):
-                for ctl in self.units.values():
-                    ctl.execute({"cmd": "status_refresh"})
-            # compact: slot data + defaults only, no transport debug. The full
-            # status with hex dumps is a ~15KB single line over the socket,
-            # which the gcode console truncates - the panel uses this instead.
-            if payload.get("compact"):
-                return {"ok": True, "status": self._compact_status()}
-            status = self.units[0].status()
-            if len(self.units) > 1:
-                status["units"] = {str(u): c.status() for u, c in self.units.items()}
-            status["daemon"] = {
-                "heartbeat_s": self.heartbeat_s,
-                "desired_assist": {str(u): v for u, v in self.desired_assist.items()},
-            }
-            return {"ok": True, "status": status}
-
-        cmd = str(payload.get("cmd", "")).strip().lower()
-        if not cmd:
-            return {"ok": False, "error": "missing cmd"}
-        try:
-            unit = self._route(payload)
-        except (ValueError, TypeError) as exc:
-            return {"ok": False, "error": str(exc)}
-        ctl = self.units[unit]
-
-        if cmd in self.UNLOCKED_CMDS:
-            result = ctl.execute(payload)
-        else:
-            lock = self.cmd_locks[unit]
-            if not lock.acquire(timeout=5.0):
-                return {"ok": False, "error": f"ACE unit {unit + 1} is busy with another command"}
-            try:
-                result = ctl.execute(payload)
-            finally:
-                lock.release()
-
-        if result.get("ok", False):
-            if cmd == "assist_start":
-                slot_idx = ctl._slot_from_payload(payload)
-                if slot_idx is None and isinstance(payload.get("params"), dict):
-                    slot_idx = ctl._slot_from_payload(payload["params"])
-                self.desired_assist[unit] = slot_idx
-            elif cmd in ("assist_stop", "retract_wait", "retract_to_sensor", "clear_hub"):
-                self.desired_assist[unit] = None
-        return result
-
-    def _compact_status(self) -> Dict[str, Any]:
-        c0 = self.units[0]
-        return {
-            "defaults": {
-                "feed_mm": c0.default_feed_mm,
-                "retract_mm": c0.default_retract_mm,
-                "dry_temp_c": c0.default_dry_temp_c,
-                "dry_minutes": c0.default_dry_minutes,
-            },
-            "units": {
-                str(u): {
-                    "ace_status": c.last_ace_status,
-                    "connected": bool(c.transport._ser and c.transport._ser.is_open),
-                    "last_error": c.transport.last_error,
-                } for u, c in self.units.items()
-            },
-        }
-
-    def _publish_loop(self) -> None:
-        """Mirror the compact status into the moonraker database (namespace
-        cosmoace, key status) so the web panel can read it with a plain GET -
-        no gcode involved, so it works during prints. Publish on change, and
-        at least every 15s so updated_unix stays fresh for staleness checks."""
-        client = self.units[0].moonraker
-        last_blob = None
-        last_pub = 0.0
-        while not self.stop_event.wait(2.0):
-            compact = self._compact_status()
-            blob = json.dumps(compact, sort_keys=True)
-            now = time.time()
-            if blob == last_blob and (now - last_pub) < 15.0:
-                continue
-            value = dict(compact)
-            value["updated_unix"] = int(now)
-            result = client._request_json("POST", "/server/database/item", {
-                "namespace": "cosmoace", "key": "status", "value": value,
-            })
-            if result.get("ok", False):
-                last_blob = blob
-                last_pub = now
-
-    def _heartbeat_loop(self, unit: int) -> None:
-        ctl = self.units[unit]
-        failing = False
-        while not self.stop_event.wait(self.heartbeat_s):
-            tr = ctl.transport
-            fresh = (time.time() - tr.last_seen_unix) < self.heartbeat_s
-            if fresh and tr.connect_generation == self.reconciled_generation[unit]:
-                continue
-            # If a command holds the lock, its own polling feeds the watchdog.
-            if not self.cmd_locks[unit].acquire(blocking=False):
-                continue
-            try:
-                result = ctl._get_ace_status(refresh=True)
-                if not result.get("ok", False):
-                    if not failing:
-                        logging.warning("unit %d heartbeat failing: %s", unit, result.get("error"))
-                        failing = True
-                    continue
-                if failing:
-                    logging.info("unit %d heartbeat recovered", unit)
-                    failing = False
-                gen = tr.connect_generation
-                if gen != self.reconciled_generation[unit]:
-                    slot_idx = self.desired_assist[unit]
-                    if slot_idx is not None:
-                        rearm = tr.rpc_call("start_feed_assist", {"index": slot_idx})
-                        logging.warning(
-                            "unit %d reconnected (gen %d); re-armed feed assist for index %d: ok=%s",
-                            unit, gen, slot_idx, rearm.get("ok", False),
-                        )
-                    self.reconciled_generation[unit] = gen
-            finally:
-                self.cmd_locks[unit].release()
-
-    def _handle_conn(self, conn: socket.socket) -> None:
-        try:
-            conn.settimeout(300.0)
-            buf = b""
-            while b"\n" not in buf and len(buf) < 65536:
-                chunk = conn.recv(65536)
-                if not chunk:
-                    break
-                buf += chunk
-            if not buf.strip():
-                return
-            try:
-                payload = json.loads(buf.decode("utf-8"))
-                if not isinstance(payload, dict):
-                    raise ValueError("payload is not an object")
-            except Exception as exc:
-                conn.sendall(json.dumps({"ok": False, "error": f"bad request: {exc}"}).encode() + b"\n")
-                return
-            result = self.handle(payload)
-            conn.sendall(json.dumps(result).encode("utf-8") + b"\n")
-        except Exception as exc:
-            logging.warning("client connection failed: %s", exc)
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-    def _accept_loop(self, server: socket.socket) -> None:
-        server.settimeout(1.0)
-        while not self.stop_event.is_set():
-            try:
-                conn, _ = server.accept()
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-            threading.Thread(target=self._handle_conn, args=(conn,), daemon=True).start()
-
-    def serve_forever(self) -> None:
-        sock_dir = os.path.dirname(self.socket_path)
-        if sock_dir:
-            os.makedirs(sock_dir, exist_ok=True)
-        try:
-            os.unlink(self.socket_path)
-        except FileNotFoundError:
-            pass
-        listeners = []
-        unix_srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        unix_srv.bind(self.socket_path)
-        os.chmod(self.socket_path, 0o666)
-        unix_srv.listen(8)
-        listeners.append(unix_srv)
-        if self.tcp_port > 0:
-            tcp_srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            tcp_srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            tcp_srv.bind(("127.0.0.1", self.tcp_port))
-            tcp_srv.listen(8)
-            listeners.append(tcp_srv)
-
-        def _shutdown(signum, frame):
-            self.stop_event.set()
-
-        signal.signal(signal.SIGTERM, _shutdown)
-        signal.signal(signal.SIGINT, _shutdown)
-
-        for unit in self.units:
-            threading.Thread(target=self._heartbeat_loop, args=(unit,), daemon=True).start()
-        threading.Thread(target=self._publish_loop, daemon=True).start()
-        threads = [threading.Thread(target=self._accept_loop, args=(srv,), daemon=True) for srv in listeners]
-        for t in threads:
-            t.start()
-        logging.info(
-            "daemon listening on %s%s (units: %s, heartbeat %.1fs)",
-            self.socket_path,
-            f" and 127.0.0.1:{self.tcp_port}" if self.tcp_port > 0 else "",
-            sorted(self.units), self.heartbeat_s,
-        )
-        try:
-            while not self.stop_event.is_set():
-                self.stop_event.wait(1.0)
-        finally:
-            for srv in listeners:
-                srv.close()
-            try:
-                os.unlink(self.socket_path)
-            except FileNotFoundError:
-                pass
-            for ctl in self.units.values():
-                ctl.transport.disconnect()
-            logging.info("daemon stopped")
-
-
-def socket_request(cfg: configparser.ConfigParser, payload: Dict[str, Any], timeout_s: float = 170.0) -> Optional[Dict[str, Any]]:
-    """Send one payload to the daemon. None = daemon not reachable (caller
-    falls back to direct serial). A dict is the daemon's answer - never fall
-    back after a successful connect, the daemon holds the port."""
-    path = cfg.get("daemon", "socket_path", fallback=DEFAULT_SOCKET_PATH)
-    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        conn.settimeout(3.0)
-        conn.connect(path)
-    except OSError:
-        conn.close()
-        return None
-    try:
-        conn.settimeout(timeout_s)
-        conn.sendall(json.dumps(payload).encode("utf-8") + b"\n")
-        buf = b""
-        while b"\n" not in buf:
-            chunk = conn.recv(65536)
-            if not chunk:
-                break
-            buf += chunk
-        if not buf.strip():
-            return {"ok": False, "error": "empty response from daemon"}
-        return json.loads(buf.decode("utf-8"))
-    except Exception as exc:
-        return {"ok": False, "error": f"daemon request failed: {exc}"}
-    finally:
-        conn.close()
 
 
 def parse_config(path: str) -> configparser.ConfigParser:
@@ -1675,11 +1399,6 @@ def parse_config(path: str) -> configparser.ConfigParser:
                 "retract_mm": "90",
                 "dry_temp_c": "45",
                 "dry_minutes": "240",
-            },
-            "daemon": {
-                "socket_path": DEFAULT_SOCKET_PATH,
-                "tcp_port": "7877",
-                "heartbeat_s": "1.5",
             },
         }
     )
@@ -1726,14 +1445,24 @@ def run_command(config_path: str, payload: Dict[str, Any]) -> int:
     info_cmds = ("slot_status", "status_refresh")
     always = str(payload.get("cmd", "")).strip().lower() in info_cmds
 
-    result = socket_request(cfg, payload)
-    if result is not None:
-        emit_json(result, always=always)
-        return 0 if result.get("ok", False) else 1
-
-    # Daemon not running: direct serial (degraded mode; unit via --unit).
-    section = "ace2" if int(payload.get("unit", 0) or 0) == 1 else "ace"
-    controller = AceController(cfg, section)
+    # Slots 5-8 reach a second ACE: its own USB device behind the first
+    # unit's hub pass-through, not something proxied through unit 1.
+    try:
+        unit = route_payload(payload)
+    except (ValueError, TypeError) as exc:
+        emit_json({"ok": False, "error": str(exc)}, always=True)
+        return 1
+    if unit and unit not in configured_units(cfg):
+        pinned = cfg.get("ace", "serial_port", fallback="auto").strip().lower() != "auto"
+        why = ("[ace] pins serial_port, which turns auto-detection off - add an [%s] "
+               "section with that unit's serial_port" % unit_section(unit)) if pinned else               ("no [%s] section and no matching ACE on USB - check it is powered and "
+               "chained to the first unit" % unit_section(unit))
+        emit_json({
+            "ok": False,
+            "error": "slot maps to ACE unit %d, which is not available: %s" % (unit + 1, why),
+        }, always=True)
+        return 1
+    controller = AceController(cfg, unit_section(unit))
     try:
         result = controller.execute(payload)
         emit_json(result, always=always)
@@ -1743,29 +1472,65 @@ def run_command(config_path: str, payload: Dict[str, Any]) -> int:
         controller.transport.disconnect()
 
 
-def run_status(config_path: str, refresh: bool) -> int:
+def configured_units(cfg: configparser.ConfigParser) -> list:
+    """Which ACE units to talk to: every unit with a config section, plus -
+    when [ace] is left on "auto" - however many ACEs are actually plugged in.
+    That is what makes a second unit work with no config at all."""
+    units = [0]
+    unit = 1
+    while cfg.has_section(unit_section(unit)):
+        units.append(unit)
+        unit += 1
+    if cfg.get("ace", "serial_port", fallback="auto").strip().lower() == "auto":
+        for extra in range(len(units), len(ace_serial_ports())):
+            units.append(extra)
+    return units
+
+
+def run_status(config_path: str, refresh: bool, compact: bool = False) -> int:
     cfg = parse_config(config_path)
     configure_logging(cfg)
-    result = socket_request(cfg, {"action": "status", "refresh": refresh})
-    if result is not None:
-        emit_json(result, always=True)
-        return 0
-    controller = AceController(cfg)
+    # Query each configured unit over its own serial port.
+    controllers = [(u, AceController(cfg, unit_section(u))) for u in configured_units(cfg)]
     try:
-        if refresh:
-            controller.execute({"cmd": "status_refresh"})
-        emit_json({"ok": True, "status": controller.status()}, always=True)
+        units = {}
+        for u, ctl in controllers:
+            if refresh:
+                ctl.execute({"cmd": "status_refresh"})
+            units[str(u)] = {
+                "ace_status": ctl.last_ace_status,
+                "connected": bool(ctl.transport._ser and ctl.transport._ser.is_open),
+                "last_error": ctl.transport.last_error,
+            }
+        c0 = controllers[0][1]
+        status: Dict[str, Any] = {
+            "defaults": {
+                "feed_mm": c0.default_feed_mm,
+                "retract_mm": c0.default_retract_mm,
+                "dry_temp_c": c0.default_dry_temp_c,
+                "dry_minutes": c0.default_dry_minutes,
+            },
+            "units": units,
+        }
+        if not compact:
+            status.update(c0.status())
+            status["units"] = units
+        else:
+            # Cache it in the moonraker database so the web panel can read
+            # slots and colors with a plain GET. That is the only way it can
+            # show anything mid-print, when injecting gcode to ask us is not
+            # acceptable. Best effort: a failure here must not fail the query.
+            cached = dict(status)
+            cached["updated_unix"] = int(time.time())
+            c0.moonraker._request_json("POST", "/server/database/item", {
+                "namespace": "cosmoace", "key": "status", "value": cached,
+            })
+        emit_json({"ok": True, "status": status}, always=True)
         return 0
     finally:
-        controller.close()
-        controller.transport.disconnect()
-
-
-def run_serve(config_path: str) -> int:
-    cfg = parse_config(config_path)
-    configure_logging(cfg)
-    AceDaemon(cfg).serve_forever()
-    return 0
+        for _, ctl in controllers:
+            ctl.close()
+            ctl.transport.disconnect()
 
 
 def main() -> int:
@@ -1774,8 +1539,8 @@ def main() -> int:
     subparsers = parser.add_subparsers(dest="action")
 
     command_parser = subparsers.add_parser("command", help="Send one ACE command")
-    command_parser.add_argument("--cmd", required=True, help="feed|feed_wait|retract|retract_wait|feed_to_sensor|retract_to_sensor|wait_motion|clear_hub|stop|stop_unwind|assist_start|assist_stop|dry_start|dry_stop|status_refresh|slot_status|assert_slot_ready|raw_method|set_serial")
-    command_parser.add_argument("--slot", type=int, default=None, help="ACE user slot 1..8 (5..8 need the daemon and an [ace2] section)")
+    command_parser.add_argument("--cmd", required=True, help="feed|feed_wait|retract_wait|feed_to_sensor|retract_to_sensor|wait_motion|clear_hub|stop|stop_unwind|assist_start|assist_stop|dry_start|dry_stop|status_refresh|slot_status|raw_method")
+    command_parser.add_argument("--slot", type=int, default=None, help="ACE user slot 1..8 (5..8 need an [ace2] section)")
     command_parser.add_argument("--mm", type=int, default=None)
     command_parser.add_argument("--speed", type=int, default=None)
     command_parser.add_argument("--mode", type=int, default=None, help="unwind mode for retracts: 0 normal, 1 enhanced")
@@ -1786,13 +1551,10 @@ def main() -> int:
     command_parser.add_argument("--fan-speed", dest="fan_speed", type=int, default=None)
     command_parser.add_argument("--method", default=None)
     command_parser.add_argument("--params-json", dest="params_json", default=None)
-    command_parser.add_argument("--port", default=None)
-    command_parser.add_argument("--baudrate", type=int, default=None)
 
     status_parser = subparsers.add_parser("status", help="Emit ACE transport/controller status")
     status_parser.add_argument("--refresh", action="store_true", help="Refresh ACE status over RPC before printing status")
-
-    subparsers.add_parser("serve", help="Run the persistent daemon: own the serial port(s), heartbeat the ACE, serve commands over a unix socket")
+    status_parser.add_argument("--compact", action="store_true", help="Slots and defaults only, no transport debug (for the web panel)")
 
     args = parser.parse_args()
 
@@ -1825,15 +1587,9 @@ def main() -> int:
             except Exception as exc:
                 print(f"Invalid --params-json: {exc}", file=sys.stderr)
                 return 2
-        if args.port:
-            payload["port"] = args.port
-        if args.baudrate is not None:
-            payload["baudrate"] = args.baudrate
         return run_command(config_path, payload)
     if args.action == "status":
-        return run_status(config_path, refresh=bool(args.refresh))
-    if args.action == "serve":
-        return run_serve(config_path)
+        return run_status(config_path, refresh=bool(args.refresh), compact=bool(args.compact))
 
     parser.print_help()
     return 1

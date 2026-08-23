@@ -1,6 +1,7 @@
 /* CosmoACE dashboard panel for the Mainsail Panel Extender.
  *
- * Four spool tiles (color + material), a dryer section with a drying
+ * A spool tile per slot (color + material) for each configured ACE, a
+ * dryer section per unit with a drying
  * toggle (uses the addon's configured dry_temp_c/dry_minutes defaults)
  * plus custom temp/time, and a slot editor with a color wheel for
  * manual (non-RFID) spools. Ported from the CosmosWeb ACE component.
@@ -12,8 +13,8 @@
  * published to the "lane_data" namespace, which OrcaSlicer's
  * "Synchronize filament list from AMS" reads.
  *
- * While a print is running the printer owns the ACE serial link, so the
- * panel shows the last known state read-only instead of an error.
+ * While a print is running the panel does not inject gcode to query the
+ * ACE; it shows the last cached state read-only instead.
  *
  * Safe without the Panel Extender: nothing loads this file. */
 ;(function () {
@@ -27,12 +28,13 @@
         PC: { n: 270, b: 110 },
     }
 
-    // aces[0] = main unit, aces[1] = second daisy-chained unit (present only
-    // when the daemon reports it). Slots number 1-4 on unit 0, 5-8 on unit 1.
+    // aces[0] = main unit, aces[1] = a second chained unit when one is
+    // configured. Slots number 1-4 on unit 0, 5-8 on unit 1.
     var ace = null, aces = [], err = '', busy = false, cur = -1, printing = false
-    // online: current data is live. false + populated aces = last known state
-    // (from the db mirror) shown read-only while the daemon is unreachable.
+    // online: this data was just queried. false + populated aces = last known
+    // state from the db cache, shown read-only.
     var online = false
+    var lastFull = 0   // last real (gcode) query, for the slow idle re-poll
     var dryDefaults = { t: 45, m: 240 } // from ace-addon.conf via status
     var slotCfgs = {} // manual slot info from the moonraker db
     var renderFn = null, pollTimer = null
@@ -145,9 +147,9 @@
     }
 
     /* ---------------- status refresh ---------------- */
-    // Preferred source: the compact status the daemon mirrors into the
-    // moonraker db every heartbeat - a plain GET, no gcode, so it works
-    // during prints. Ignored when stale (daemon down).
+    // Preferred source: the compact status the CLI caches in the moonraker db
+    // every time it is asked - a plain GET, no gcode, so it still works
+    // mid-print. Anything older than this is shown as last known state.
     function applyStatus(st, fallbackErr) {
         if (st.units) {
             aces = Object.keys(st.units).sort().map(function (u) {
@@ -160,21 +162,28 @@
         var d = st.defaults || {}
         if (d.dry_temp_c) dryDefaults.t = d.dry_temp_c
         if (d.dry_minutes) dryDefaults.m = d.dry_minutes
-        if (!ace)
+        if (ace) {
+            err = ''   // recovered: don't leave a stale message on screen
+        } else {
             err = (st.units && st.units['0'] && st.units['0'].last_error) ||
                 (st.transport && st.transport.last_error) ||
                 fallbackErr || 'ACE not responding'
+        }
     }
     function readDb(ctx) {
         return ctx.apiGet('/server/database/item?namespace=cosmoace&key=status')
             .then(function (r) {
                 var v = (r.result && r.result.value) || {}
                 if (!v.units) return false
+                // Age of the cache says when it was last written, NOT whether
+                // the ACE is reachable - nothing writes it on a timer. So a
+                // stale entry must never flip the panel to "offline"; it only
+                // means we should go ask again. Keep whatever `online` the
+                // last real query established.
                 var stale = v.updated_unix &&
-                    Date.now() / 1000 - v.updated_unix > 30 // daemon not running
+                    Date.now() / 1000 - v.updated_unix > 30
                 applyStatus(v, '')
-                online = !stale
-                if (stale) err = 'ACE daemon offline — showing last known state'
+                if (!stale) online = true
                 return stale ? 'stale' : 'fresh'
             })
             .catch(function () { return false })
@@ -185,6 +194,7 @@
     function refresh(ctx) {
         if (busy) return
         busy = true
+        lastFull = Date.now()
         err = ''
         renderFn && renderFn()
         queryPrinter(ctx).then(function () {
@@ -619,6 +629,15 @@
                 var was = printing
                 queryPrinter(ctx).then(function () {
                     if (was !== printing && !printing) { refresh(ctx); return }
+                    // While idle, re-query for real every 2 min: keeps the db
+                    // cache warm for a page load mid-print, picks up spool
+                    // swaps, and notices an unplugged ACE. Slow on purpose -
+                    // each one logs a line in the gcode console.
+                    if (!printing && Date.now() - lastFull > 120000) {
+                        lastFull = Date.now()
+                        refresh(ctx)
+                        return
+                    }
                     readDb(ctx).then(function () {
                         var s = JSON.stringify(aces) + '|' + printing + '|' + cur + '|' + online
                         if (s !== lastPoll) {

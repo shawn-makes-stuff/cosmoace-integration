@@ -21,11 +21,14 @@ if [ -f "$PRINTER_CFG" ] && grep -q '^\[include ace-addon\.cfg\][[:space:]]*$' "
     sed -i '/^\[include ace-addon\.cfg\][[:space:]]*$/d' "$PRINTER_CFG"
 fi
 
-# Daemon service.
-if [ -f /etc/init.d/cosmoace-daemon ]; then
-    /etc/init.d/cosmoace-daemon stop 2>/dev/null || true
-    rm -f /etc/init.d/cosmoace-daemon /etc/rc*.d/S*cosmoace-daemon /var/run/cosmoace.sock
-fi
+# Keep-alive service (and the daemon it replaced, if still around).
+for svc in ace-keepalive cosmoace-daemon; do
+    if [ -f "/etc/init.d/${svc}" ]; then
+        "/etc/init.d/${svc}" stop 2>/dev/null || true
+        rm -f "/etc/init.d/${svc}" /etc/rc*.d/S*"${svc}"
+    fi
+done
+rm -f /var/run/ace-keepalive.pid /var/run/cosmoace.sock /var/run/cosmoace-daemon.pid
 
 # Legacy service and symlink from older CosmoACE versions.
 if [ -f /etc/init.d/ace-addon ]; then

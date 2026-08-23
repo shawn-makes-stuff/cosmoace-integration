@@ -10,6 +10,14 @@ three slicer one-liners.
 - `[gcode_macro _ACE_CONFIG]`: user-editable tuning values.
 - `[gcode_macro _ACE_STATE]`: runtime state (`mode`, `current_slot`, `pending_slot`).
 
+## Slots and units
+
+Slots are numbered 1-8: **1-4 on the first ACE, 5-8 on a second one** declared
+as `[ace2]` in `ace-addon.conf`. Every macro that takes a `SLOT` accepts the
+full range; the CLI maps it to the right unit and that unit's local slot. A
+second ACE is its own USB serial device (the chain port is a hub pass-through),
+so nothing is relayed through the first unit.
+
 ## Config Variables
 
 Edit these in `/etc/klipper/config/ace-addon.cfg`.
@@ -22,8 +30,8 @@ Edit these in `/etc/klipper/config/ace-addon.cfg`.
 | `variable_unload_to_sensor_search_mm` | `900` | Max retract distance while waiting for the sensor to clear (manual `ACE_UNLOAD_TO_SENSOR`). |
 | `variable_unload_extra_mm` | `170` | Added to `load_to_printhead_mm` for the full-unload retract (hub clearance + slip margin), run as one completed unwind so the ACE respools. Over-length is safe. |
 | `variable_retract_past_sensor_mm` | `90` | Extra retract past the sensor to clear the hub path. |
-| `variable_feed_speed_mm_s` | `25` | ACE feed speed. |
-| `variable_retract_speed_mm_s` | `15` | ACE retract speed. |
+| `variable_feed_speed_mm_s` | `50` | ACE feed speed. |
+| `variable_retract_speed_mm_s` | `75` | ACE retract speed. Faster outruns the spool take-up rollers and leaves slack inside the ACE — drop toward `25` if that bites. |
 | `variable_purge_mm` | `40` | Default purge length (overridden per-change by `PURGE=`). |
 | `variable_purge_speed_mm_s` | `3` | Extrusion speed for purge and sync-load. |
 | `variable_purge_temp` | `250` | Fallback hotend temperature when no `TEMP=` is given. |
@@ -36,7 +44,7 @@ Edit these in `/etc/klipper/config/ace-addon.cfg`.
 | --- | --- | --- |
 | `ACE_START` | Blocking print start: heat, home, recover leftovers, full load, purge, wipe. | `SLOT`, `BED`, `TEMP`, opt. `CHAMBER`, `PURGE` |
 | `ACE_END` | End of print: unload the active slot, then COSMOS `PRINT_END`. | none |
-| `T0`–`T3` | Toolchange during a print (cut → unload → clear hub → load → purge → resume). | opt. `TEMP`, `PURGE` |
+| `T0`–`T7` | Toolchange during a print (cut → unload → load → purge → resume). `T4`–`T7` are slots 5-8 on a second ACE. | opt. `TEMP`, `PURGE` |
 | `ACE_LOAD` | Full manual load of a slot: sensor → printhead → sync → purge → wipe. Leaves ACE feed assist on for the slot. | `SLOT`, opt. `TEMP`, `PURGE` |
 | `ACE_UNLOAD` | Full manual unload: stop feed assist, cut, one completed retract back to the slot (respools), verify sensor clear. Heats if needed. | opt. `SLOT` |
 | `ACE_LOAD_TO_SENSOR` | Feed a slot until the sensor triggers. | `SLOT` |
@@ -47,14 +55,14 @@ Edit these in `/etc/klipper/config/ace-addon.cfg`.
 | `ACE_PURGE` | Purge at the tray in one move (macros raise max_extrude_only_distance to 1000mm). | opt. `LENGTH` |
 | `ACE_WIPE` | Flick the purge blob off at the tray (COSMOS `KICK`). | none |
 | `ACE_STATUS` | Print ACE mode, slots, and live sensor state. | none |
-| `ACE_SLOT_STATUS` | Query slot readiness from the ACE itself. | `SLOT` |
+| `ACE_SLOT_STATUS` | Query slot readiness from the ACE itself. | `SLOT` (1-8) |
 | `ACE_SET_FILAMENT` | Store a slot's material + color on the ACE (`set_filament_info`). | `SLOT`, `TYPE`, `COLOR` (RRGGBB) |
 
 ## Internal Macros
 
 | Macro | Purpose |
 | --- | --- |
-| `_ACE_TOOLCHANGE` | The blocking mid-print swap behind `T0`–`T3`. |
+| `_ACE_TOOLCHANGE` | The blocking mid-print swap behind `T0`–`T7`. |
 | `_ACE_TOOL_SELECT` | Routes `T<n>` to a toolchange during a print, ignores it otherwise. |
 | `_ACE_SENSOR_EVENT` | Sensor hook; pauses on a genuine runout during printing. |
 | `_ACE_VERIFY_SENSOR` | Raises if the sensor is not in the expected state (`TRIGGERED=0/1`). |
@@ -62,6 +70,17 @@ Edit these in `/etc/klipper/config/ace-addon.cfg`.
 | `_ACE_LIFT` | Guarded 5mm Z lift before cut moves. |
 | `_ACE_SLOT_LOAD_RAW` / `_ACE_SLOT_WAIT_IDLE_RAW` | Fire-and-forget ACE feed + wait, used by sync-load. |
 | `_ACE_RESET_STATE` | Clears mode/slots and cancels a pending delayed resume. |
+
+## Keep-alive
+
+The ACE drops its own USB link about 3.5s after the last complete frame it
+received. Left alone it re-enumerates forever, which clears feed assist
+mid-print and makes the occasional command fail with an I/O error.
+`/etc/init.d/ace-keepalive` runs a shell loop that writes one `get_status`
+frame to every ACE every 2s. It is not a service that owns the port — macros
+still talk to the ACE directly, and both sides take an exclusive `flock` so
+they can never interleave bytes inside a frame. `rpc_call` also reconnects and
+resends once if a write lands in a re-enumeration window.
 
 ## Design notes
 
