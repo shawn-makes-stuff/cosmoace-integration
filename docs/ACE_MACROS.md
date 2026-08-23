@@ -46,6 +46,7 @@ Edit these in `/etc/klipper/config/ace-addon.cfg`.
 | `ACE_SYNC_LOAD` | Feed ACE and extruder together through the hotend. | opt. `SLOT` |
 | `ACE_PURGE` | Purge at the tray in one move (macros raise max_extrude_only_distance to 1000mm). | opt. `LENGTH` |
 | `ACE_WIPE` | Flick the purge blob off at the tray (COSMOS `KICK`). | none |
+| `COSMOACE_CUT` | Ram the cutter blade repeatedly at 300mm/s — more reliable than the stock single press. Stands alone; nothing calls it automatically. | opt. `PRESSES` (3), `SPEED_MM_S` (300), `RETRACT` (10), `PUSHBACK` (5) |
 | `ACE_STATUS` | Print ACE mode, slots, and live sensor state. | none |
 | `ACE_SLOT_STATUS` | Query slot readiness from the ACE itself. | `SLOT` |
 | `ACE_SET_FILAMENT` | Store a slot's material + color on the ACE (`set_filament_info`). | `SLOT`, `TYPE`, `COLOR` (RRGGBB) |
@@ -71,10 +72,11 @@ Edit these in `/etc/klipper/config/ace-addon.cfg`.
   the sensor cannot verify (push to printhead, sync-load) fail loudly in the
   console but cannot stop the flow — watch the purge after a load.
 - **Cutting uses the COSMOS `UNLOAD_FILAMENT` macro** (cut at the blade, move
-  to the tray, back the filament 30mm out of the extruder gears). The addon
-  overrides `CUT_FILAMENT` itself (same blade coordinates, but the ram runs at
-  300mm/s and presses twice — the stock single F1200 press sometimes fails to
-  shear). If a firmware update moves the blade, update the override too.
+  to the tray, back the filament 30mm out of the extruder gears), so blade
+  coordinates track the firmware, not this addon. `COSMOACE_CUT` is a
+  standalone alternative for manual use: same blade coordinates, but the ram
+  runs at 300mm/s and presses three times, since the stock single F1200 press
+  sometimes fails to shear.
 - **Resume uses `RESUME_BASE`**, which restores the position captured at
   `PAUSE_BASE` — no manual position bookkeeping.
 
