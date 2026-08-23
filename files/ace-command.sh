@@ -7,7 +7,7 @@ ACE_CONFIG="${ACE_ADDON_CONFIG:-/user-resource/ace-addon/ace-addon.conf}"
 
 usage() {
     echo "Usage: $0 <cmd> [args...]"
-    echo "Commands: feed, feed-wait, retract, retract-wait, feed-to-sensor, retract-to-sensor, wait-motion, clear-hub, stop, stop-unwind, assist-start, assist-stop, dry-start, dry-stop, status, status-refresh, slot-status, assert-slot-ready, set-serial, debug-cli"
+    echo "Commands: feed, feed-wait, retract, retract-wait, feed-to-sensor, retract-to-sensor, wait-motion, clear-hub, stop, stop-unwind, assist-start, assist-stop, dry-start, dry-stop, status, status-refresh, slot-status, assert-slot-ready, set-filament, set-serial, debug-cli"
     exit 1
 }
 
@@ -96,6 +96,15 @@ case "${cmd}" in
         ;;
     assert-slot-ready)
         run_python_cmd "assert_slot_ready" --slot "${2:-1}"
+        ;;
+    set-filament)
+        # set-filament <slot 1..4> <type> <hex color RRGGBB>
+        slot="${2:-1}"; ftype="${3:-PLA}"; hex="${4:-FFFFFF}"
+        r=$(printf '%d' "0x$(echo "${hex}" | cut -c1-2)")
+        g=$(printf '%d' "0x$(echo "${hex}" | cut -c3-4)")
+        b=$(printf '%d' "0x$(echo "${hex}" | cut -c5-6)")
+        params="{\"method\":\"set_filament_info\",\"params\":{\"index\":$((slot-1)),\"type\":\"${ftype}\",\"color\":[${r},${g},${b}]}}"
+        "${PYTHON_BIN}" "${ACE_SCRIPT}" --config "${ACE_CONFIG}" command --cmd raw_method --params-json "${params}"
         ;;
     set-serial)
         run_python_cmd "set_serial" --port "${2:-auto}" --baudrate "${3:-115200}"
