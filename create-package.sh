@@ -18,5 +18,8 @@ tar -C "${SCRIPT_DIR}" -czf "${DIST_DIR}/${PKG}" \
     files/ace-addon.conf \
     files/ace-command.sh \
     files/ace_macros.cfg \
+    files/webui-panel/panel.js \
+    files/webui-loader/loader.js \
+    files/webui-loader/cosmoace-webui-init \
 
 echo "Created ${DIST_DIR}/${PKG}"

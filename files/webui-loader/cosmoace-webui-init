@@ -1,0 +1,102 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          cosmoace-webui
+# Required-Start:    moonraker
+# Required-Stop:
+# Default-Start:     2 3 4 5
+# Default-Stop:
+# Short-Description: Serve the CosmoACE Mainsail panel on COSMOS builds
+#                    without the Mainsail Panel Extender
+### END INIT INFO
+#
+# Builds a union webroot at /etc/webui (writable /etc overlay): symlinks to
+# the stock mainsail files plus a patched index.html/sw.js that load the
+# bundled panel loader, and /addons -> /user-resource/webui-addons. Static
+# serving through moonraker's existing web_client — no moonraker patch.
+#
+# Runs after moonraker (S97 > S96), which resets /etc/webui to a plain
+# symlink at every start; a real directory at that path survives moonraker
+# restarts (its rm -f cannot remove a directory).
+#
+# Self-retires when the COSMOS image ships the Panel Extender natively
+# (/var/www/addons/loader.js) or when mainsail is not the selected web UI.
+
+UNION=/etc/webui
+SRC=/var/www/mainsail
+ADD=/user-resource/webui-addons
+
+restore_symlink() {
+    ui="$(config-manager ui web_ui 2>/dev/null || echo mainsail)"
+    rm -rf "$UNION"
+    ln -sf "/var/www/${ui}/" "$UNION"
+}
+
+write_manifest() {
+    [ -d "$ADD/panels" ] || return 0
+    {
+        printf '{"panels": ['
+        first=1
+        for d in "$ADD"/panels/*/; do
+            [ -f "${d}panel.js" ] || continue
+            n="$(basename "$d")"
+            [ "$first" = 1 ] || printf ', '
+            printf '{"name": "%s", "script": "/addons/panels/%s/panel.js"}' "$n" "$n"
+            first=0
+        done
+        printf ']}\n'
+    } > "$ADD/manifest.json"
+}
+
+case "$1" in
+    start)
+        write_manifest
+
+        # native Panel Extender in the image: hand over
+        if [ -f /var/www/addons/loader.js ]; then
+            [ -d "$UNION" ] && [ ! -L "$UNION" ] && restore_symlink
+            exit 0
+        fi
+        # nothing to serve, or mainsail missing / not selected: stay stock
+        ui="$(config-manager ui web_ui 2>/dev/null || echo mainsail)"
+        if [ ! -f "$ADD/loader.js" ] || [ ! -d "$SRC" ] || [ "$ui" != "mainsail" ]; then
+            [ -d "$UNION" ] && [ ! -L "$UNION" ] && restore_symlink
+            exit 0
+        fi
+
+        # (re)build the union webroot from the current mainsail
+        rm -rf "$UNION"
+        mkdir "$UNION"
+        for f in "$SRC"/*; do
+            ln -s "$f" "$UNION/$(basename "$f")"
+        done
+        ln -sfn "$ADD" "$UNION/addons"
+        rm -f "$UNION/index.html" "$UNION/sw.js"
+        if grep -q 'addons/loader.js' "$SRC/index.html"; then
+            cp "$SRC/index.html" "$UNION/index.html"
+        else
+            sed 's|</head>|<script src="/addons/loader.js" defer></script></head>|' \
+                "$SRC/index.html" > "$UNION/index.html"
+        fi
+        if [ -f "$SRC/sw.js" ]; then
+            # bump the service worker precache revision so browsers with a
+            # cached stock page fetch the patched one
+            REV="$(md5sum "$UNION/index.html" | cut -d' ' -f1)"
+            sed "s|{url:\"index.html\",revision:\"[0-9a-f]*\"}|{url:\"index.html\",revision:\"$REV\"}|" \
+                "$SRC/sw.js" > "$UNION/sw.js"
+        fi
+        ;;
+    stop)
+        ;;
+    restart|force-reload)
+        $0 start
+        ;;
+    remove)
+        # used by the uninstaller: back to the stock symlink
+        restore_symlink
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|remove}"
+        exit 1
+        ;;
+esac
+exit 0

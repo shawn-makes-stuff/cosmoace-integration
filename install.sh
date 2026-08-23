@@ -62,6 +62,34 @@ if [ -f "${SCRIPT_DIR}/uninstall.sh" ]; then
     chmod 0755 "${ADDON_DIR}/uninstall.sh"
 fi
 
+# Mainsail dashboard panel. On COSMOS builds that ship the Mainsail Panel
+# Extender, installing the panel file is all that's needed. On builds
+# without it, also install the bundled loader: a union webroot at
+# /etc/webui serves patched mainsail entry files plus the addon files
+# through moonraker's existing static serving — no system files modified.
+if [ ! -d /var/www/mainsail ]; then
+    echo "Mainsail not found on this system; skipping the web UI panel."
+elif [ -f "${SCRIPT_DIR}/files/webui-panel/panel.js" ]; then
+    mkdir -p /user-resource/webui-addons/panels/cosmoace
+    cp "${SCRIPT_DIR}/files/webui-panel/panel.js" /user-resource/webui-addons/panels/cosmoace/panel.js
+    chmod 0644 /user-resource/webui-addons/panels/cosmoace/panel.js
+    if [ -f /var/www/addons/loader.js ]; then
+        echo "Web UI panel installed (COSMOS ships the Mainsail Panel Extender)."
+    elif [ -f "${SCRIPT_DIR}/files/webui-loader/loader.js" ]; then
+        echo "Installing bundled Mainsail panel loader..."
+        cp "${SCRIPT_DIR}/files/webui-loader/loader.js" /user-resource/webui-addons/loader.js
+        chmod 0644 /user-resource/webui-addons/loader.js
+        touch /user-resource/webui-addons/.cosmoace-bundled-loader
+        cp "${SCRIPT_DIR}/files/webui-loader/cosmoace-webui-init" /etc/init.d/cosmoace-webui
+        chmod 0755 /etc/init.d/cosmoace-webui
+        for rl in 2 3 4 5; do
+        [ -d "/etc/rc${rl}.d" ] && ln -sf ../init.d/cosmoace-webui "/etc/rc${rl}.d/S97cosmoace-webui"
+        done
+        /etc/init.d/cosmoace-webui start
+        echo "Web UI panel installed (bundled loader). Reload the browser to see it."
+    fi
+fi
+
 # ace-addon.conf: keep the user's copy unless it still has settings that are
 # broken on current COSMOS (Moonraker port 7125, toolhead MCU tty, old sensor name).
 if [ -f "${ADDON_DIR}/ace-addon.conf" ]; then

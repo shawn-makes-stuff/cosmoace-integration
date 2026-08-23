@@ -13,6 +13,16 @@ CosmoACE installs:
 - a Python-based ACE CLI tool (talks the ACE framed JSON-RPC protocol over USB serial)
 - a shell wrapper Klipper calls via `gcode_shell_command`
 - a Klipper macro set for blocking start, toolchange, and end-print flows
+- an "ACE Pro" Mainsail dashboard panel (slot colors/materials, dryer
+  controls, OrcaSlicer AMS sync via `lane_data`). On COSMOS builds that
+  ship the Mainsail Panel Extender the panel just registers itself; on
+  builds without it, the installer also deploys a bundled copy of the
+  loader, served through a union webroot at `/etc/webui` using moonraker's
+  existing static file serving — no system files are modified, and the
+  setup hands over automatically if a later COSMOS build ships the
+  extender natively. Skipped entirely if Mainsail isn't installed. New
+  panels dropped into `/user-resource/webui-addons/panels/` are picked up
+  at boot (or after `/etc/init.d/cosmoace-webui start`).
 
 The supported print flow is:
 1. Load the selected slot until the filament sensor triggers.

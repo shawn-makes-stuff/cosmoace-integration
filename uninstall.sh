@@ -38,6 +38,27 @@ fi
 echo "Removing ${ADDON_DIR}..."
 rm -rf "$ADDON_DIR"
 
+# Mainsail dashboard panel
+rm -rf /user-resource/webui-addons/panels/cosmoace
+# Bundled panel loader: remove only if we installed it and no other addon
+# panels depend on it. Never touch a natively shipped extender.
+if [ -f /user-resource/webui-addons/.cosmoace-bundled-loader ]; then
+    if [ -n "$(ls -d /user-resource/webui-addons/panels/*/ 2>/dev/null)" ]; then
+        echo "Other web UI panels present; keeping the bundled panel loader."
+        [ -x /etc/init.d/cosmoace-webui ] && /etc/init.d/cosmoace-webui start
+    else
+        echo "Removing bundled Mainsail panel loader..."
+        [ -x /etc/init.d/cosmoace-webui ] && /etc/init.d/cosmoace-webui remove
+        rm -f /etc/init.d/cosmoace-webui /etc/rc*.d/S*cosmoace-webui
+        rm -f /user-resource/webui-addons/loader.js \
+              /user-resource/webui-addons/manifest.json \
+              /user-resource/webui-addons/.cosmoace-bundled-loader
+    fi
+elif [ -x /etc/init.d/cosmoace-webui ]; then
+    /etc/init.d/cosmoace-webui start   # refresh manifest without our panel
+fi
+rmdir /user-resource/webui-addons/panels /user-resource/webui-addons 2>/dev/null || true
+
 echo "Restarting Klipper..."
 /etc/init.d/klipper restart || echo "Warning: Klipper restart failed; restart it manually with: /etc/init.d/klipper restart"
 
