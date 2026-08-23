@@ -46,7 +46,6 @@ Edit these in `/etc/klipper/config/ace-addon.cfg`.
 | `ACE_SYNC_LOAD` | Feed ACE and extruder together through the hotend. | opt. `SLOT` |
 | `ACE_PURGE` | Purge at the tray in one move (macros raise max_extrude_only_distance to 1000mm). | opt. `LENGTH` |
 | `ACE_WIPE` | Flick the purge blob off at the tray (COSMOS `KICK`). | none |
-| `COSMOACE_CUT` | Cut by hand with tunable presses/speed. Independent of the `CUT_FILAMENT` override the unload path uses. | opt. `PRESSES` (3), `SPEED_MM_S` (300), `RETRACT` (10), `PUSHBACK` (5) |
 | `ACE_STATUS` | Print ACE mode, slots, and live sensor state. | none |
 | `ACE_SLOT_STATUS` | Query slot readiness from the ACE itself. | `SLOT` |
 | `ACE_SET_FILAMENT` | Store a slot's material + color on the ACE (`set_filament_info`). | `SLOT`, `TYPE`, `COLOR` (RRGGBB) |
@@ -76,8 +75,9 @@ Edit these in `/etc/klipper/config/ace-addon.cfg`.
   overrides `CUT_FILAMENT` itself (same blade coordinates, but the ram runs at
   300mm/s and presses twice — the stock single F1200 press sometimes fails to
   shear), so the unload path gets the harder cut. If a firmware update moves
-  the blade, update the override too. `COSMOACE_CUT` is a separate, tunable
-  macro for cutting by hand; nothing calls it automatically.
+  the blade, update the override too. Note that the ram decelerates to a stop
+  at Y4, so press count and speed only matter if the shear happens mid-travel;
+  a blade that will not cut at Y4 is a mechanical problem, not a macro one.
 - **Resume uses `RESUME_BASE`**, which restores the position captured at
   `PAUSE_BASE` — no manual position bookkeeping.
 
