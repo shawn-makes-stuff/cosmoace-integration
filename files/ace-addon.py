@@ -1408,22 +1408,7 @@ class AceDaemon:
             # status with hex dumps is a ~15KB single line over the socket,
             # which the gcode console truncates - the panel uses this instead.
             if payload.get("compact"):
-                c0 = self.units[0]
-                return {"ok": True, "status": {
-                    "defaults": {
-                        "feed_mm": c0.default_feed_mm,
-                        "retract_mm": c0.default_retract_mm,
-                        "dry_temp_c": c0.default_dry_temp_c,
-                        "dry_minutes": c0.default_dry_minutes,
-                    },
-                    "units": {
-                        str(u): {
-                            "ace_status": c.last_ace_status,
-                            "connected": bool(c.transport._ser and c.transport._ser.is_open),
-                            "last_error": c.transport.last_error,
-                        } for u, c in self.units.items()
-                    },
-                }}
+                return {"ok": True, "status": self._compact_status()}
             status = self.units[0].status()
             if len(self.units) > 1:
                 status["units"] = {str(u): c.status() for u, c in self.units.items()}
@@ -1462,6 +1447,47 @@ class AceDaemon:
             elif cmd in ("assist_stop", "retract_wait", "retract_to_sensor", "clear_hub"):
                 self.desired_assist[unit] = None
         return result
+
+    def _compact_status(self) -> Dict[str, Any]:
+        c0 = self.units[0]
+        return {
+            "defaults": {
+                "feed_mm": c0.default_feed_mm,
+                "retract_mm": c0.default_retract_mm,
+                "dry_temp_c": c0.default_dry_temp_c,
+                "dry_minutes": c0.default_dry_minutes,
+            },
+            "units": {
+                str(u): {
+                    "ace_status": c.last_ace_status,
+                    "connected": bool(c.transport._ser and c.transport._ser.is_open),
+                    "last_error": c.transport.last_error,
+                } for u, c in self.units.items()
+            },
+        }
+
+    def _publish_loop(self) -> None:
+        """Mirror the compact status into the moonraker database (namespace
+        cosmoace, key status) so the web panel can read it with a plain GET -
+        no gcode involved, so it works during prints. Publish on change, and
+        at least every 15s so updated_unix stays fresh for staleness checks."""
+        client = self.units[0].moonraker
+        last_blob = None
+        last_pub = 0.0
+        while not self.stop_event.wait(2.0):
+            compact = self._compact_status()
+            blob = json.dumps(compact, sort_keys=True)
+            now = time.time()
+            if blob == last_blob and (now - last_pub) < 15.0:
+                continue
+            value = dict(compact)
+            value["updated_unix"] = int(now)
+            result = client._request_json("POST", "/server/database/item", {
+                "namespace": "cosmoace", "key": "status", "value": value,
+            })
+            if result.get("ok", False):
+                last_blob = blob
+                last_pub = now
 
     def _heartbeat_loop(self, unit: int) -> None:
         ctl = self.units[unit]
@@ -1565,6 +1591,7 @@ class AceDaemon:
 
         for unit in self.units:
             threading.Thread(target=self._heartbeat_loop, args=(unit,), daemon=True).start()
+        threading.Thread(target=self._publish_loop, daemon=True).start()
         threads = [threading.Thread(target=self._accept_loop, args=(srv,), daemon=True) for srv in listeners]
         for t in threads:
             t.start()

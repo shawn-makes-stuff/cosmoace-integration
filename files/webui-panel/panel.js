@@ -142,49 +142,65 @@
     }
 
     /* ---------------- status refresh ---------------- */
-    // Run "ace_rpc status-refresh" and read the JSON it prints from the
-    // gcode_store (entries after the command was sent). Skipped while
-    // printing: the printer owns the ACE serial link then.
+    // Preferred source: the compact status the daemon mirrors into the
+    // moonraker db every heartbeat - a plain GET, no gcode, so it works
+    // during prints. Ignored when stale (daemon down).
+    function applyStatus(st, fallbackErr) {
+        if (st.units) {
+            aces = Object.keys(st.units).sort().map(function (u) {
+                return st.units[u].ace_status || null
+            })
+        } else {
+            aces = [st.ace_status || null]
+        }
+        ace = aces[0] || null
+        var d = st.defaults || {}
+        if (d.dry_temp_c) dryDefaults.t = d.dry_temp_c
+        if (d.dry_minutes) dryDefaults.m = d.dry_minutes
+        if (!ace)
+            err = (st.units && st.units['0'] && st.units['0'].last_error) ||
+                (st.transport && st.transport.last_error) ||
+                fallbackErr || 'ACE not responding'
+    }
+    function readDb(ctx) {
+        return ctx.apiGet('/server/database/item?namespace=cosmoace&key=status')
+            .then(function (r) {
+                var v = (r.result && r.result.value) || {}
+                if (!v.units) return false
+                if (v.updated_unix && Date.now() / 1000 - v.updated_unix > 30)
+                    return false // stale: daemon not running
+                applyStatus(v, '')
+                return true
+            })
+            .catch(function () { return false })
+    }
+    // Fallback: run "ace_rpc panel-status" and read the JSON it prints from
+    // the gcode_store. Skipped while printing - injecting gcode mid-print
+    // stalls the queue briefly, and the db path covers that case.
     function refresh(ctx) {
         if (busy) return
         busy = true
         err = ''
         renderFn && renderFn()
         queryPrinter(ctx).then(function () {
-            if (printing) { busy = false; renderFn && renderFn(); return }
-            var t0 = 0
-            return ctx.apiGet('/server/gcode_store?count=1')
-                .then(function (r) {
-                    var e = (r.result.gcode_store || [])[0]
-                    t0 = e ? e.time : 0
-                    return ctx.gcode(
-                        'RUN_SHELL_COMMAND CMD=ace_rpc PARAMS="panel-status"')
-                })
-                .then(function () { return pollStore(ctx, t0, Date.now() + 15000) })
-                .then(function (j) {
-                    var st = j.status || {}
-                    if (st.units) {
-                        aces = Object.keys(st.units).sort().map(function (u) {
-                            return st.units[u].ace_status || null
-                        })
-                    } else {
-                        aces = [st.ace_status || null]
-                    }
-                    ace = aces[0] || null
-                    var d = st.defaults || {}
-                    if (d.dry_temp_c) dryDefaults.t = d.dry_temp_c
-                    if (d.dry_minutes) dryDefaults.m = d.dry_minutes
-                    if (!ace)
-                        err = (st.units && st.units['0'] && st.units['0'].last_error) ||
-                            (st.transport && st.transport.last_error) ||
-                            j.error || 'ACE not responding'
-                })
-                .catch(function (e) { ace = null; aces = []; err = e.message || String(e) })
-                .then(function () {
-                    busy = false
-                    renderFn && renderFn()
-                    publishLanes(ctx)
-                })
+            return readDb(ctx).then(function (got) {
+                if (got || printing) return
+                var t0 = 0
+                return ctx.apiGet('/server/gcode_store?count=1')
+                    .then(function (r) {
+                        var e = (r.result.gcode_store || [])[0]
+                        t0 = e ? e.time : 0
+                        return ctx.gcode(
+                            'RUN_SHELL_COMMAND CMD=ace_rpc PARAMS="panel-status"')
+                    })
+                    .then(function () { return pollStore(ctx, t0, Date.now() + 15000) })
+                    .then(function (j) { applyStatus(j.status || {}, j.error) })
+                    .catch(function (e) { ace = null; aces = []; err = e.message || String(e) })
+            })
+        }).then(function () {
+            busy = false
+            renderFn && renderFn()
+            publishLanes(ctx)
         })
     }
 
@@ -500,9 +516,8 @@
                     (busy ? '<span class="cosmoace-note" style="margin:0">refreshing…</span>' : '') +
                     '</div>' +
                     (printing
-                        ? '<p class="cosmoace-note">A print is running — the printer ' +
-                          'controls the ACE, so status and settings are locked until ' +
-                          'it finishes.</p>'
+                        ? '<p class="cosmoace-note">A print is running — controls are ' +
+                          'locked until it finishes.</p>'
                         : err && !ace
                             ? '<p class="cosmoace-note">' + esc(err) + '</p>'
                             : '')
@@ -586,17 +601,21 @@
                 })
             }
 
-            // light poll: printing state + active slot; full refresh when a
-            // print ends so the panel comes back to life on its own
+            // light poll: printing state + active slot, plus a db read so
+            // status stays live during prints (dryer countdown, colors).
+            // Re-render only on change - a rebuild stomps half-typed inputs.
+            var lastPoll = ''
             function lightPoll() {
-                var was = printing, wasCur = cur
+                var was = printing
                 queryPrinter(ctx).then(function () {
-                    if (was !== printing) {
-                        if (!printing) refresh(ctx)
-                        else { err = ''; renderFn && renderFn() }
-                    } else if (wasCur !== cur) {
-                        renderFn && renderFn()
-                    }
+                    if (was !== printing && !printing) { refresh(ctx); return }
+                    readDb(ctx).then(function () {
+                        var s = JSON.stringify(aces) + '|' + printing + '|' + cur
+                        if (s !== lastPoll) {
+                            lastPoll = s
+                            renderFn && renderFn()
+                        }
+                    })
                 })
             }
 
