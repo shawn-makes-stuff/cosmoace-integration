@@ -37,8 +37,10 @@ Everything else the macros need (`MOVE_TO_TRAY`, `KICK`, `PAUSE_BASE`, `RESUME_B
 
 ## Hardware
 
-You will need this filament hub adapter (or similar) which mounts to the Centauri Carbon's runout sensor:
-[Filament Hub Adapter (Printables)](https://www.printables.com/model/1662192-centauri-carbon-multi-material-filament-hub-4-colo)
+You will need [this filament hub adapter](https://www.printables.com/model/1820714-anycubic-filament-hub-to-elegoo-centauri-carbon-fi) (or similar) which mounts to the Centauri Carbon's runout sensor:
+<br>
+<br>
+<img width="540" height="540" alt="IMG_5330" src="https://github.com/user-attachments/assets/08e2b6c4-4dfd-4131-bc70-6a60aec7596f" />
 
 ### Modified ACE Cable
 You will need to either modify the 4-pin end of the ACE cable or build an adapter. Pins 3 and 4 need to be swapped.
