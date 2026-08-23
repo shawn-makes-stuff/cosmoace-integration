@@ -30,6 +30,9 @@
     // aces[0] = main unit, aces[1] = second daisy-chained unit (present only
     // when the daemon reports it). Slots number 1-4 on unit 0, 5-8 on unit 1.
     var ace = null, aces = [], err = '', busy = false, cur = -1, printing = false
+    // online: current data is live. false + populated aces = last known state
+    // (from the db mirror) shown read-only while the daemon is unreachable.
+    var online = false
     var dryDefaults = { t: 45, m: 240 } // from ace-addon.conf via status
     var slotCfgs = {} // manual slot info from the moonraker db
     var renderFn = null, pollTimer = null
@@ -167,10 +170,12 @@
             .then(function (r) {
                 var v = (r.result && r.result.value) || {}
                 if (!v.units) return false
-                if (v.updated_unix && Date.now() / 1000 - v.updated_unix > 30)
-                    return false // stale: daemon not running
+                var stale = v.updated_unix &&
+                    Date.now() / 1000 - v.updated_unix > 30 // daemon not running
                 applyStatus(v, '')
-                return true
+                online = !stale
+                if (stale) err = 'ACE daemon offline — showing last known state'
+                return stale ? 'stale' : 'fresh'
             })
             .catch(function () { return false })
     }
@@ -184,7 +189,7 @@
         renderFn && renderFn()
         queryPrinter(ctx).then(function () {
             return readDb(ctx).then(function (got) {
-                if (got || printing) return
+                if (got === 'fresh' || printing) return
                 var t0 = 0
                 return ctx.apiGet('/server/gcode_store?count=1')
                     .then(function (r) {
@@ -194,8 +199,9 @@
                             'RUN_SHELL_COMMAND CMD=ace_rpc PARAMS="panel-status"')
                     })
                     .then(function () { return pollStore(ctx, t0, Date.now() + 15000) })
-                    .then(function (j) { applyStatus(j.status || {}, j.error) })
-                    .catch(function (e) { ace = null; aces = []; err = e.message || String(e) })
+                    .then(function (j) { applyStatus(j.status || {}, j.error); online = !!ace })
+                    // keep any last-known state from the stale db mirror
+                    .catch(function (e) { online = false; if (!err) err = e.message || String(e) })
             })
         }).then(function () {
             busy = false
@@ -507,8 +513,8 @@
 
                 var chip = printing
                     ? '<span class="cosmoace-chip print">printing</span>'
-                    : '<span class="cosmoace-chip ' + (ace ? 'ok' : '') + '">' +
-                      (ace ? esc(ace.status || 'ready') : busy ? '…' : 'offline') +
+                    : '<span class="cosmoace-chip ' + (online && ace ? 'ok' : '') + '">' +
+                      (online && ace ? esc(ace.status || 'ready') : busy ? '…' : 'offline') +
                       '</span>'
                 var html =
                     '<div class="cosmoace-row" style="margin-bottom:6px">' + chip +
@@ -518,7 +524,7 @@
                     (printing
                         ? '<p class="cosmoace-note">A print is running — controls are ' +
                           'locked until it finishes.</p>'
-                        : err && !ace
+                        : err && !online
                             ? '<p class="cosmoace-note">' + esc(err) + '</p>'
                             : '')
 
@@ -529,7 +535,11 @@
                     html += '<div class="cosmoace-slots">'
                     for (i = 0; i < 4; i++) {
                         var n = u * 4 + i + 1
-                        var info = slotInfo(n, slotAt(n))
+                        // no data for this unit (connecting / never seen):
+                        // empty spools, not the saved manual colors
+                        var info = aces[u]
+                            ? slotInfo(n, slotAt(n))
+                            : { tagged: false, type: '', color: '', sku: '' }
                         html += '<div class="cosmoace-slot' +
                             (cur === n ? ' active' : '') +
                             (printing ? ' locked' : '') +
@@ -546,7 +556,7 @@
                     var a = aces[u] || null
                     var dryer = (a && (a.dryer_status || a.dryer)) || {}
                     var drying = String(dryer.status || '').toLowerCase() === 'drying'
-                    var lock = printing || !a
+                    var lock = printing || !a || !online
                     html +=
                         '<div class="cosmoace-dryer">' +
                         '<div class="cosmoace-dtitle">' +
@@ -610,7 +620,7 @@
                 queryPrinter(ctx).then(function () {
                     if (was !== printing && !printing) { refresh(ctx); return }
                     readDb(ctx).then(function () {
-                        var s = JSON.stringify(aces) + '|' + printing + '|' + cur
+                        var s = JSON.stringify(aces) + '|' + printing + '|' + cur + '|' + online
                         if (s !== lastPoll) {
                             lastPoll = s
                             renderFn && renderFn()
