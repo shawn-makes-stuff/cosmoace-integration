@@ -13,7 +13,7 @@ INCLUDE_LINE="[include ace-addon.cfg]"
 SAVE_CONFIG_MARKER='^#\*# <-* SAVE_CONFIG -*>'
 STAMP="$(date +%Y%m%d_%H%M%S)"
 
-required_files="files/ace-addon.py files/ace-addon.conf files/ace-command.sh files/ace_macros.cfg"
+required_files="files/ace-addon.py files/ace-addon.conf files/ace-command.sh files/ace_macros.cfg files/cosmoace-daemon-init"
 
 fail() {
     echo "ERROR: $1" >&2
@@ -61,6 +61,17 @@ if [ -f "${SCRIPT_DIR}/uninstall.sh" ]; then
     cp "${SCRIPT_DIR}/uninstall.sh" "${ADDON_DIR}/uninstall.sh"
     chmod 0755 "${ADDON_DIR}/uninstall.sh"
 fi
+
+# Daemon service: holds the ACE serial port open and heartbeats it so the
+# ACE's ~3.5s comms watchdog never drops the USB link mid-command. The CLI
+# falls back to direct serial when the daemon is down.
+echo "Installing CosmoACE daemon service..."
+cp "${SCRIPT_DIR}/files/cosmoace-daemon-init" /etc/init.d/cosmoace-daemon
+chmod 0755 /etc/init.d/cosmoace-daemon
+for rl in 2 3 4 5; do
+    [ -d "/etc/rc${rl}.d" ] && ln -sf ../init.d/cosmoace-daemon "/etc/rc${rl}.d/S98cosmoace-daemon"
+done
+/etc/init.d/cosmoace-daemon restart
 
 # Mainsail dashboard panel. On COSMOS builds that ship the Mainsail Panel
 # Extender, installing the panel file is all that's needed. On builds

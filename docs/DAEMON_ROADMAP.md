@@ -1,4 +1,9 @@
-# Daemon Roadmap (pinned — not started)
+# Daemon Roadmap (phase 1 shipped 2026-08-23; phases 2+ pinned)
+
+Status: phase 1 (daemon, blocking semantics) is live — `ace-addon.py serve`,
+`/etc/init.d/cosmoace-daemon`, socket-first CLI with direct-serial fallback,
+heartbeat every 1.5s (reset loop verified gone), feed-assist reconcile after
+reconnect, unit routing shaped for a second ACE (`[ace2]`, slots 5-8).
 
 Decision: replace the CLI-per-command transport with a persistent daemon that
 owns the ACE serial port. The CLI/`ace_rpc` entry point stays but becomes a

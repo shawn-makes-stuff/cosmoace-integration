@@ -1,0 +1,42 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          cosmoace-daemon
+# Required-Start:
+# Required-Stop:
+# Default-Start:     2 3 4 5
+# Default-Stop:
+# Short-Description: CosmoACE daemon - owns the ACE serial port and
+#                    heartbeats it so its ~3.5s comms watchdog never
+#                    drops the USB link
+### END INIT INFO
+#
+# The CLI (ace-command.sh -> ace-addon.py command) talks to this daemon over
+# a unix socket and falls back to direct serial when it is not running, so
+# stopping this service degrades gracefully to per-command connections.
+
+PYTHON=/usr/bin/python3
+SCRIPT=/user-resource/ace-addon/ace-addon.py
+CONF=/user-resource/ace-addon/ace-addon.conf
+PIDFILE=/var/run/cosmoace-daemon.pid
+
+case "$1" in
+    start)
+        [ -f "$SCRIPT" ] || exit 0
+        start-stop-daemon -S -b -m -p "$PIDFILE" -x "$PYTHON" -- \
+            -X no_debug_ranges "$SCRIPT" --config "$CONF" serve
+        ;;
+    stop)
+        start-stop-daemon -K -p "$PIDFILE" 2>/dev/null || true
+        rm -f "$PIDFILE"
+        ;;
+    restart|force-reload)
+        "$0" stop
+        sleep 1
+        "$0" start
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart}"
+        exit 1
+        ;;
+esac
+exit 0
