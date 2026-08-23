@@ -575,8 +575,12 @@ class AceController:
         self.default_retract_mm = cfg.getint("defaults", "retract_mm", fallback=90)
         self.default_dry_temp_c = cfg.getint("defaults", "dry_temp_c", fallback=45)
         self.default_dry_minutes = cfg.getint("defaults", "dry_minutes", fallback=240)
-        self.feed_speed = cfg.getint(section, "feed_speed", fallback=25)
-        self.retract_speed = cfg.getint(section, "retract_speed", fallback=15)
+        self.feed_speed = cfg.getint(section, "feed_speed", fallback=50)
+        self.retract_speed = cfg.getint(section, "retract_speed", fallback=25)
+        # unwind_filament mode: 0 = normal, 1 = "enhanced" (undocumented;
+        # believed to drive the spool take-up harder - the rollers rewind
+        # slower than the feed gear retracts, piling up slack).
+        self.retract_mode = cfg.getint(section, "retract_mode", fallback=0)
         self.dry_fan_speed = cfg.getint(section, "dry_fan_speed", fallback=7000)
         self.sensor_name = cfg.get("klipper", "sensor_name", fallback="filament_sensor").strip() or "filament_sensor"
         self.last_ace_status: Optional[Dict[str, Any]] = None
@@ -949,7 +953,7 @@ class AceController:
             "confirm_s": hold_required,
         }
 
-    def _unwind_and_wait(self, slot: int, mm: float, speed: float, timeout_s: Optional[float] = None) -> Dict[str, Any]:
+    def _unwind_and_wait(self, slot: int, mm: float, speed: float, timeout_s: Optional[float] = None, mode: Optional[int] = None) -> Dict[str, Any]:
         length = max(0, int(mm))
         speed_int = max(1, int(speed))
         # Increased buffer from 5s to 30s
@@ -957,7 +961,7 @@ class AceController:
 
         result = self.transport.rpc_call(
             "unwind_filament",
-            {"index": slot, "length": length, "speed": speed_int, "mode": 0},
+            {"index": slot, "length": length, "speed": speed_int, "mode": self.retract_mode if mode is None else int(mode)},
         )
         if not result.get("ok", False):
             return result
@@ -1008,19 +1012,21 @@ class AceController:
                 return {"ok": False, "error": "retract requires slot 1..4 or index 0..3"}
             mm = _int(params if "mm" in params else payload, "mm", self.default_retract_mm)
             speed = _int(params if "speed" in params else payload, "speed", self.retract_speed)
+            mode = _int(params if "mode" in params else payload, "mode", self.retract_mode)
             result = self.transport.rpc_call(
                 "unwind_filament",
-                {"index": slot, "length": mm, "speed": speed, "mode": 0},
+                {"index": slot, "length": mm, "speed": speed, "mode": mode},
             )
         elif cmd == "retract_wait":
             if slot is None:
                 return {"ok": False, "error": "retract_wait requires slot 1..4 or index 0..3"}
             mm = _int(params if "mm" in params else payload, "mm", self.default_retract_mm)
             speed = _int(params if "speed" in params else payload, "speed", self.retract_speed)
+            mode = _int(params if "mode" in params else payload, "mode", self.retract_mode)
             timeout_s = _float(params if "timeout_s" in params else payload, "timeout_s", (float(mm) / max(float(speed), 1.0)) + 30.0)
             result = self.transport.rpc_call(
                 "unwind_filament",
-                {"index": slot, "length": mm, "speed": speed, "mode": 0},
+                {"index": slot, "length": mm, "speed": speed, "mode": mode},
             )
             if result.get("ok", False):
                 wait_result = self._wait_for_motion_complete(slot, timeout_s)
@@ -1105,9 +1111,10 @@ class AceController:
                     "sensor": sensor_result,
                 }
             else:
+                mode = _int(params if "mode" in params else payload, "mode", self.retract_mode)
                 result = self.transport.rpc_call(
                     "unwind_filament",
-                    {"index": slot, "length": mm, "speed": speed, "mode": 0},
+                    {"index": slot, "length": mm, "speed": speed, "mode": mode},
                 )
                 if result.get("ok", False):
                     wait_result = self._wait_for_sensor_state(sensor_name, False, timeout_s)
@@ -1580,8 +1587,9 @@ def parse_config(path: str) -> configparser.ConfigParser:
                 "rpc_timeout_s": "2.5",
                 "read_idle_s": "0.08",
                 "read_max_bytes": "4096",
-                "feed_speed": "25",
-                "retract_speed": "15",
+                "feed_speed": "50",
+                "retract_speed": "25",
+                "retract_mode": "0",
                 "dry_fan_speed": "7000",
                 "log_path": "/board-resource/ace-addon.log",
             },
@@ -1698,6 +1706,7 @@ def main() -> int:
     command_parser.add_argument("--slot", type=int, default=None, help="ACE user slot 1..8 (5..8 need the daemon and an [ace2] section)")
     command_parser.add_argument("--mm", type=int, default=None)
     command_parser.add_argument("--speed", type=int, default=None)
+    command_parser.add_argument("--mode", type=int, default=None, help="unwind mode for retracts: 0 normal, 1 enhanced")
     command_parser.add_argument("--timeout_s", type=float, default=None)
     command_parser.add_argument("--temp-c", dest="temp_c", type=int, default=None)
     command_parser.add_argument("--minutes", type=int, default=None)
@@ -1723,6 +1732,8 @@ def main() -> int:
             payload["mm"] = args.mm
         if args.speed is not None:
             payload["speed"] = args.speed
+        if args.mode is not None:
+            payload["mode"] = args.mode
         if args.timeout_s is not None:
             payload["timeout_s"] = args.timeout_s
         if args.temp_c is not None:
