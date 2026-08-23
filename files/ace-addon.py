@@ -1684,8 +1684,9 @@ def run_command(config_path: str, payload: Dict[str, Any]) -> int:
         emit_json(result, always=always)
         return 0 if result.get("ok", False) else 1
 
-    # Daemon not running: direct serial (degraded mode, slots 1-4 only).
-    controller = AceController(cfg)
+    # Daemon not running: direct serial (degraded mode; unit via --unit).
+    section = "ace2" if int(payload.get("unit", 0) or 0) == 1 else "ace"
+    controller = AceController(cfg, section)
     try:
         result = controller.execute(payload)
         emit_json(result, always=always)
@@ -1731,6 +1732,7 @@ def main() -> int:
     command_parser.add_argument("--mm", type=int, default=None)
     command_parser.add_argument("--speed", type=int, default=None)
     command_parser.add_argument("--mode", type=int, default=None, help="unwind mode for retracts: 0 normal, 1 enhanced")
+    command_parser.add_argument("--unit", type=int, default=None, help="ACE unit for slot-less commands (0 = [ace], 1 = [ace2])")
     command_parser.add_argument("--timeout_s", type=float, default=None)
     command_parser.add_argument("--temp-c", dest="temp_c", type=int, default=None)
     command_parser.add_argument("--minutes", type=int, default=None)
@@ -1758,6 +1760,8 @@ def main() -> int:
             payload["speed"] = args.speed
         if args.mode is not None:
             payload["mode"] = args.mode
+        if args.unit is not None:
+            payload["unit"] = args.unit
         if args.timeout_s is not None:
             payload["timeout_s"] = args.timeout_s
         if args.temp_c is not None:

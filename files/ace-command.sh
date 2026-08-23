@@ -105,11 +105,13 @@ case "${cmd}" in
         run_cmd "{\"cmd\":\"assist_stop\",\"slot\":${2:-1}}" quiet command --cmd assist_stop --slot "${2:-1}"
         ;;
     dry-start)
-        run_cmd "{\"cmd\":\"dry_start\",\"temp_c\":${2:-45},\"minutes\":${3:-240},\"fan_speed\":${4:-7000}}" quiet \
-            command --cmd dry_start --temp-c "${2:-45}" --minutes "${3:-240}" --fan-speed "${4:-7000}"
+        # dry-start <temp> <minutes> <fan> <unit 0|1>
+        run_cmd "{\"cmd\":\"dry_start\",\"temp_c\":${2:-45},\"minutes\":${3:-240},\"fan_speed\":${4:-7000},\"unit\":${5:-0}}" quiet \
+            command --cmd dry_start --temp-c "${2:-45}" --minutes "${3:-240}" --fan-speed "${4:-7000}" --unit "${5:-0}"
         ;;
     dry-stop)
-        run_cmd "{\"cmd\":\"dry_stop\"}" quiet command --cmd dry_stop
+        # dry-stop <unit 0|1>
+        run_cmd "{\"cmd\":\"dry_stop\",\"unit\":${2:-0}}" quiet command --cmd dry_stop --unit "${2:-0}"
         ;;
     status)
         run_cmd "{\"action\":\"status\"}" always status
@@ -124,14 +126,17 @@ case "${cmd}" in
         run_cmd "{\"cmd\":\"assert_slot_ready\",\"slot\":${2:-1}}" quiet command --cmd assert_slot_ready --slot "${2:-1}"
         ;;
     set-filament)
-        # set-filament <slot 1..4> <type> <hex color RRGGBB>
+        # set-filament <slot 1..8> <type> <hex color RRGGBB>
+        # raw_method params are nested, which the daemon's slot routing does
+        # not descend into - compute unit and local index here instead.
         slot="${2:-1}"; ftype="${3:-PLA}"; hex="${4:-FFFFFF}"
+        unit=$(( (slot - 1) / 4 )); idx=$(( (slot - 1) % 4 ))
         r=$(printf '%d' "0x$(echo "${hex}" | cut -c1-2)")
         g=$(printf '%d' "0x$(echo "${hex}" | cut -c3-4)")
         b=$(printf '%d' "0x$(echo "${hex}" | cut -c5-6)")
-        params="{\"method\":\"set_filament_info\",\"params\":{\"index\":$((slot-1)),\"type\":\"${ftype}\",\"color\":[${r},${g},${b}]}}"
-        run_cmd "{\"cmd\":\"raw_method\",\"params\":${params}}" quiet \
-            command --cmd raw_method --params-json "${params}"
+        params="{\"method\":\"set_filament_info\",\"params\":{\"index\":${idx},\"type\":\"${ftype}\",\"color\":[${r},${g},${b}]}}"
+        run_cmd "{\"cmd\":\"raw_method\",\"unit\":${unit},\"params\":${params}}" quiet \
+            command --cmd raw_method --unit "${unit}" --params-json "${params}"
         ;;
     set-serial)
         run_cmd "{\"cmd\":\"set_serial\",\"port\":\"${2:-auto}\",\"baudrate\":${3:-115200}}" quiet \

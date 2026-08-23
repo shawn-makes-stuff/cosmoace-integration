@@ -27,7 +27,9 @@
         PC: { n: 270, b: 110 },
     }
 
-    var ace = null, err = '', busy = false, cur = -1, printing = false
+    // aces[0] = main unit, aces[1] = second daisy-chained unit (present only
+    // when the daemon reports it). Slots number 1-4 on unit 0, 5-8 on unit 1.
+    var ace = null, aces = [], err = '', busy = false, cur = -1, printing = false
     var dryDefaults = { t: 45, m: 240 } // from ace-addon.conf via status
     var slotCfgs = {} // manual slot info from the moonraker db
     var renderFn = null, pollTimer = null
@@ -107,12 +109,18 @@
         }
     }
 
+    // slot n (1-8) -> that unit's slot status object, or null
+    function slotAt(n) {
+        var a = aces[Math.floor((n - 1) / 4)]
+        return (a && a.slots && a.slots[(n - 1) % 4]) || null
+    }
+    function slotCount() { return Math.max(1, aces.length) * 4 }
+
     var lastPub = ''
     function publishLanes(ctx) {
-        var slots = (ace && ace.slots) || [null, null, null, null]
         var lanes = {}
-        for (var i = 0; i < 4; i++) {
-            var info = slotInfo(i + 1, slots[i])
+        for (var i = 0; i < slotCount(); i++) {
+            var info = slotInfo(i + 1, slotAt(i + 1))
             var t = ACE_TEMP[info.type] || {}
             var lane = {
                 lane: String(i),
@@ -155,7 +163,14 @@
                 .then(function () { return pollStore(ctx, t0, Date.now() + 15000) })
                 .then(function (j) {
                     var st = j.status || {}
-                    ace = st.ace_status || null
+                    if (st.units) {
+                        aces = Object.keys(st.units).sort().map(function (u) {
+                            return st.units[u].ace_status || null
+                        })
+                    } else {
+                        aces = [st.ace_status || null]
+                    }
+                    ace = aces[0] || null
                     var d = st.defaults || {}
                     if (d.dry_temp_c) dryDefaults.t = d.dry_temp_c
                     if (d.dry_minutes) dryDefaults.m = d.dry_minutes
@@ -163,7 +178,7 @@
                         err = (st.transport && st.transport.last_error) ||
                             j.error || 'ACE not responding'
                 })
-                .catch(function (e) { ace = null; err = e.message || String(e) })
+                .catch(function (e) { ace = null; aces = []; err = e.message || String(e) })
                 .then(function () {
                     busy = false
                     renderFn && renderFn()
@@ -387,13 +402,13 @@
                     b.className = 'v-btn v-btn--text v-size--small'
                     b.textContent = 'Copy slots for Orca'
                     b.onclick = function () {
-                        var slots = (ace && ace.slots) || [null, null, null, null]
-                        var txt = slots.slice(0, 4).map(function (s, i) {
-                            var info = slotInfo(i + 1, s)
-                            return 'T' + i + ': ' + (info.color || '#000000') +
-                                ' ' + (info.type || 'empty')
-                        }).join('\n')
-                        navigator.clipboard && navigator.clipboard.writeText(txt)
+                        var txt = []
+                        for (var i = 0; i < slotCount(); i++) {
+                            var info = slotInfo(i + 1, slotAt(i + 1))
+                            txt.push('T' + i + ': ' + (info.color || '#000000') +
+                                ' ' + (info.type || 'empty'))
+                        }
+                        navigator.clipboard && navigator.clipboard.writeText(txt.join('\n'))
                     }
                     el.appendChild(b)
                 },
@@ -442,6 +457,8 @@
                 'color:var(--v-primary-base,#2196f3)}' +
                 '.cosmoace-mchip:disabled{opacity:.45;cursor:default}' +
                 '.cosmoace-note{opacity:.6;font-size:.78rem;margin:2px 0 8px}' +
+                '.cosmoace-unitlbl{opacity:.55;font-size:.7rem;letter-spacing:.08em;' +
+                'text-transform:uppercase;margin:6px 0 2px}' +
                 '.cosmoace-tgl{position:relative;width:34px;height:18px;flex:0 0 auto;' +
                 'border-radius:9px;background:rgba(128,128,128,.35);cursor:pointer;' +
                 'border:none;padding:0;transition:background .2s}' +
@@ -455,23 +472,27 @@
             var body = el.querySelector('[data-body]')
 
             renderFn = function () {
-                var slots = (ace && ace.slots) || [null, null, null, null]
-                var dryer = (ace && (ace.dryer_status || ace.dryer)) || {}
-                var drying = String(dryer.status || '').toLowerCase() === 'drying'
-                var lock = printing || !ace
+                var units = Math.max(1, aces.length)
+                var multi = units > 1
+                var u, i
 
-                // keep user-typed custom values across re-renders
-                var prevT = body.querySelector('[data-ct]')
-                var prevM = body.querySelector('[data-cm]')
-                var valT = prevT && prevT.value ? prevT.value : dryDefaults.t
-                var valM = prevM && prevM.value ? prevM.value : dryDefaults.m
+                // keep user-typed custom values across re-renders (per unit)
+                var vals = []
+                for (u = 0; u < units; u++) {
+                    var pT = body.querySelector('[data-ct="' + u + '"]')
+                    var pM = body.querySelector('[data-cm="' + u + '"]')
+                    vals.push({
+                        t: pT && pT.value ? pT.value : dryDefaults.t,
+                        m: pM && pM.value ? pM.value : dryDefaults.m,
+                    })
+                }
 
                 var chip = printing
                     ? '<span class="cosmoace-chip print">printing</span>'
                     : '<span class="cosmoace-chip ' + (ace ? 'ok' : '') + '">' +
                       (ace ? esc(ace.status || 'ready') : busy ? '…' : 'offline') +
                       '</span>'
-                body.innerHTML =
+                var html =
                     '<div class="cosmoace-row" style="margin-bottom:6px">' + chip +
                     (cur >= 1 ? '<span class="cosmoace-note" style="margin:0">active: slot ' + cur + '</span>' : '') +
                     (busy ? '<span class="cosmoace-note" style="margin:0">refreshing…</span>' : '') +
@@ -482,12 +503,17 @@
                           'it finishes.</p>'
                         : err && !ace
                             ? '<p class="cosmoace-note">' + esc(err) + '</p>'
-                            : '') +
-                    '<div class="cosmoace-slots">' +
-                    slots.slice(0, 4).map(function (s, i) {
-                        var n = i + 1
-                        var info = slotInfo(n, s)
-                        return '<div class="cosmoace-slot' +
+                            : '')
+
+                for (u = 0; u < units; u++) {
+                    if (multi)
+                        html += '<div class="cosmoace-unitlbl">ACE ' + (u + 1) +
+                            (aces[u] ? '' : ' — offline') + '</div>'
+                    html += '<div class="cosmoace-slots">'
+                    for (i = 0; i < 4; i++) {
+                        var n = u * 4 + i + 1
+                        var info = slotInfo(n, slotAt(n))
+                        html += '<div class="cosmoace-slot' +
                             (cur === n ? ' active' : '') +
                             (printing ? ' locked' : '') +
                             '" data-slot="' + n + '" title="Slot ' + n +
@@ -495,54 +521,67 @@
                             spoolSvg(info.color) +
                             '<span>' + esc(info.type || '—') + (info.tagged ? ' ⦿' : '') + '</span>' +
                             '</div>'
-                    }).join('') + '</div>' +
-                    '<div class="cosmoace-dryer">' +
-                    '<div class="cosmoace-dtitle">Dryer ' +
-                    (drying
-                        ? '<b>' + esc(dryer.target_temp) + '°C</b>/<b>' +
-                          (ace && ace.temp != null ? esc(ace.temp) : '–') +
-                          '°C</b> — ' + fmtRemain(dryer.remain_time)
-                        : '— off') + '</div>' +
-                    '<div class="cosmoace-row">' +
-                    '<span style="font-size:.78rem">Drying</span>' +
-                    '<label class="cosmoace-field"><input data-ct type="number" ' +
-                    'min="35" max="65" value="' + valT + '"' +
-                    (drying ? ' disabled' : '') + '><span>°C</span></label>' +
-                    '<label class="cosmoace-field"><input data-cm type="number" ' +
-                    'min="10" max="1440" value="' + valM + '"' +
-                    (drying ? ' disabled' : '') + '><span>min</span></label>' +
-                    '<button data-drytgl class="cosmoace-tgl' + (drying ? ' on' : '') + '"' +
-                    (lock ? ' disabled' : '') + ' title="' +
-                    (drying ? 'Stop drying' : 'Start drying') + '"></button>' +
-                    '</div></div>'
+                    }
+                    html += '</div>'
+                }
+
+                for (u = 0; u < units; u++) {
+                    var a = aces[u] || null
+                    var dryer = (a && (a.dryer_status || a.dryer)) || {}
+                    var drying = String(dryer.status || '').toLowerCase() === 'drying'
+                    var lock = printing || !a
+                    html +=
+                        '<div class="cosmoace-dryer">' +
+                        '<div class="cosmoace-dtitle">' +
+                        (multi ? 'ACE ' + (u + 1) + ' dryer ' : 'Dryer ') +
+                        (drying
+                            ? '<b>' + esc(dryer.target_temp) + '°C</b>/<b>' +
+                              (a && a.temp != null ? esc(a.temp) : '–') +
+                              '°C</b> — ' + fmtRemain(dryer.remain_time)
+                            : '— off') + '</div>' +
+                        '<div class="cosmoace-row">' +
+                        '<span style="font-size:.78rem">Drying</span>' +
+                        '<label class="cosmoace-field"><input data-ct="' + u + '" type="number" ' +
+                        'min="35" max="65" value="' + vals[u].t + '"' +
+                        (drying ? ' disabled' : '') + '><span>°C</span></label>' +
+                        '<label class="cosmoace-field"><input data-cm="' + u + '" type="number" ' +
+                        'min="10" max="1440" value="' + vals[u].m + '"' +
+                        (drying ? ' disabled' : '') + '><span>min</span></label>' +
+                        '<button data-drytgl="' + u + '" class="cosmoace-tgl' + (drying ? ' on' : '') + '"' +
+                        (lock ? ' disabled' : '') + ' title="' +
+                        (drying ? 'Stop drying' : 'Start drying') + '"></button>' +
+                        '</div></div>'
+                }
+                body.innerHTML = html
 
                 if (!printing)
                     body.querySelectorAll('[data-slot]').forEach(function (d) {
                         d.onclick = function () {
                             var n = +d.dataset.slot
-                            slotModal(ctx, n, ((ace && ace.slots) || [])[n - 1])
+                            slotModal(ctx, n, slotAt(n))
                         }
                     })
-                var startDry = function (t, m2) {
-                    ctx.gcode('RUN_SHELL_COMMAND CMD=ace_rpc PARAMS="dry-start ' +
-                        t + ' ' + m2 + '"').catch(function () {})
-                    setTimeout(function () { refresh(ctx) }, 2500)
-                }
-                var tgl = body.querySelector('[data-drytgl]')
-                if (tgl) tgl.onclick = function () {
-                    if (drying) {
-                        ctx.gcode('RUN_SHELL_COMMAND CMD=ace_rpc PARAMS="dry-stop"')
-                            .catch(function () {})
+                body.querySelectorAll('[data-drytgl]').forEach(function (tgl) {
+                    tgl.onclick = function () {
+                        var tu = +tgl.dataset.drytgl
+                        var ta = aces[tu] || null
+                        var td = (ta && (ta.dryer_status || ta.dryer)) || {}
+                        if (String(td.status || '').toLowerCase() === 'drying') {
+                            ctx.gcode('RUN_SHELL_COMMAND CMD=ace_rpc PARAMS="dry-stop ' + tu + '"')
+                                .catch(function () {})
+                        } else {
+                            var t = parseFloat(body.querySelector('[data-ct="' + tu + '"]').value) || dryDefaults.t
+                            var m2 = parseFloat(body.querySelector('[data-cm="' + tu + '"]').value) || dryDefaults.m
+                            ctx.gcode('RUN_SHELL_COMMAND CMD=ace_rpc PARAMS="dry-start ' +
+                                Math.min(65, Math.max(35, t)) + ' ' +
+                                Math.min(1440, Math.max(10, m2)) + ' 7000 ' + tu + '"')
+                                .catch(function () {})
+                        }
                         setTimeout(function () { refresh(ctx) }, 2500)
-                    } else {
-                        var t = parseFloat(body.querySelector('[data-ct]').value) || dryDefaults.t
-                        var m2 = parseFloat(body.querySelector('[data-cm]').value) || dryDefaults.m
-                        startDry(Math.min(65, Math.max(35, t)),
-                            Math.min(1440, Math.max(10, m2)))
+                        tgl.classList.toggle('on')
+                        tgl.disabled = true
                     }
-                    tgl.classList.toggle('on')
-                    tgl.disabled = true
-                }
+                })
             }
 
             // light poll: printing state + active slot; full refresh when a
