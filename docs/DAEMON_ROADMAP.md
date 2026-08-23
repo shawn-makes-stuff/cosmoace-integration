@@ -1,9 +1,15 @@
 # Daemon Roadmap (phase 1 shipped 2026-08-23; phases 2+ pinned)
 
-Status: phase 1 (daemon, blocking semantics) is live — `ace-addon.py serve`,
+Status: phases 1 AND 2 are live — `ace-addon.py serve`,
 `/etc/init.d/cosmoace-daemon`, socket-first CLI with direct-serial fallback,
 heartbeat every 1.5s (reset loop verified gone), feed-assist reconcile after
-reconnect, unit routing shaped for a second ACE (`[ace2]`, slots 5-8).
+reconnect. Phase 2: loopback TCP listener + busybox-nc thin client in
+ace-command.sh (~0.1s per call vs ~2.2s python startup). A second
+daisy-chained ACE is running as unit 1 ([ace2], user slots 5-8) — verified
+moving on hardware. Both units MUST be pinned by /dev/serial/by-path (both
+enumerate as the same by-id name, "usb-ANYCUBIC_ACE_1", which collides).
+Still open before 8-color prints: the 8-slot hub + feeding unit 2 into the
+printhead, then widening the macro slot checks to 1-8 and adding T4-T7.
 
 Decision: replace the CLI-per-command transport with a persistent daemon that
 owns the ACE serial port. The CLI/`ace_rpc` entry point stays but becomes a

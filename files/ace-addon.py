@@ -576,7 +576,7 @@ class AceController:
         self.default_dry_temp_c = cfg.getint("defaults", "dry_temp_c", fallback=45)
         self.default_dry_minutes = cfg.getint("defaults", "dry_minutes", fallback=240)
         self.feed_speed = cfg.getint(section, "feed_speed", fallback=50)
-        self.retract_speed = cfg.getint(section, "retract_speed", fallback=25)
+        self.retract_speed = cfg.getint(section, "retract_speed", fallback=75)
         # unwind_filament mode: 0 = normal, 1 = "enhanced" (undocumented;
         # believed to drive the spool take-up harder - the rollers rewind
         # slower than the feed gear retracts, piling up slack).
@@ -1358,6 +1358,9 @@ class AceDaemon:
     def __init__(self, cfg: configparser.ConfigParser) -> None:
         self.cfg = cfg
         self.socket_path = cfg.get("daemon", "socket_path", fallback=DEFAULT_SOCKET_PATH)
+        # Loopback TCP for the busybox-nc thin client (no python startup per
+        # macro call). 0 disables. Localhost-only, root-only box.
+        self.tcp_port = cfg.getint("daemon", "tcp_port", fallback=7877)
         self.heartbeat_s = cfg.getfloat("daemon", "heartbeat_s", fallback=1.5)
         self.units: Dict[int, AceController] = {0: AceController(cfg, "ace")}
         if cfg.has_section("ace2"):
@@ -1502,6 +1505,17 @@ class AceDaemon:
             except Exception:
                 pass
 
+    def _accept_loop(self, server: socket.socket) -> None:
+        server.settimeout(1.0)
+        while not self.stop_event.is_set():
+            try:
+                conn, _ = server.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            threading.Thread(target=self._handle_conn, args=(conn,), daemon=True).start()
+
     def serve_forever(self) -> None:
         sock_dir = os.path.dirname(self.socket_path)
         if sock_dir:
@@ -1510,11 +1524,18 @@ class AceDaemon:
             os.unlink(self.socket_path)
         except FileNotFoundError:
             pass
-        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server.bind(self.socket_path)
+        listeners = []
+        unix_srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        unix_srv.bind(self.socket_path)
         os.chmod(self.socket_path, 0o666)
-        server.listen(8)
-        server.settimeout(1.0)
+        unix_srv.listen(8)
+        listeners.append(unix_srv)
+        if self.tcp_port > 0:
+            tcp_srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            tcp_srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            tcp_srv.bind(("127.0.0.1", self.tcp_port))
+            tcp_srv.listen(8)
+            listeners.append(tcp_srv)
 
         def _shutdown(signum, frame):
             self.stop_event.set()
@@ -1524,19 +1545,21 @@ class AceDaemon:
 
         for unit in self.units:
             threading.Thread(target=self._heartbeat_loop, args=(unit,), daemon=True).start()
+        threads = [threading.Thread(target=self._accept_loop, args=(srv,), daemon=True) for srv in listeners]
+        for t in threads:
+            t.start()
         logging.info(
-            "daemon listening on %s (units: %s, heartbeat %.1fs)",
-            self.socket_path, sorted(self.units), self.heartbeat_s,
+            "daemon listening on %s%s (units: %s, heartbeat %.1fs)",
+            self.socket_path,
+            f" and 127.0.0.1:{self.tcp_port}" if self.tcp_port > 0 else "",
+            sorted(self.units), self.heartbeat_s,
         )
         try:
             while not self.stop_event.is_set():
-                try:
-                    conn, _ = server.accept()
-                except socket.timeout:
-                    continue
-                threading.Thread(target=self._handle_conn, args=(conn,), daemon=True).start()
+                self.stop_event.wait(1.0)
         finally:
-            server.close()
+            for srv in listeners:
+                srv.close()
             try:
                 os.unlink(self.socket_path)
             except FileNotFoundError:
@@ -1588,7 +1611,7 @@ def parse_config(path: str) -> configparser.ConfigParser:
                 "read_idle_s": "0.08",
                 "read_max_bytes": "4096",
                 "feed_speed": "50",
-                "retract_speed": "25",
+                "retract_speed": "75",
                 "retract_mode": "0",
                 "dry_fan_speed": "7000",
                 "log_path": "/board-resource/ace-addon.log",
@@ -1608,6 +1631,7 @@ def parse_config(path: str) -> configparser.ConfigParser:
             },
             "daemon": {
                 "socket_path": DEFAULT_SOCKET_PATH,
+                "tcp_port": "7877",
                 "heartbeat_s": "1.5",
             },
         }
