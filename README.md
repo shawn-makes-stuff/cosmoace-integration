@@ -93,11 +93,35 @@ SSH into the printer and run:
 
 ```sh
 cd /user-resource
-curl -k -f -S -L -o cosmoace.tar.gz https://github.com/shawn-makes-stuff/cosmoace-integration/archive/refs/heads/main.tar.gz
+curl -k -f -S -L -o cosmoace.tar.gz https://github.com/mon5termatt/cosmoace-integration/archive/refs/heads/main.tar.gz
 tar xzf cosmoace.tar.gz && rm cosmoace.tar.gz
 sh cosmoace-integration-main/install.sh
 ```
 
+The installer asks two hardware questions (or take env defaults when there is no TTY):
+
+| Option | Env | Default | Meaning |
+| --- | --- | --- | --- |
+| Hub / chassis runout | `HAS_HUB` | `1` | Stage loads through `filament_sensor` on PC0 |
+| Toolhead sensor | `HAS_TOOLHEAD` | `0` | Canvas/CC1 sensor on `hotend:PB2` (`ace_toolhead.cfg`) |
+
+Examples:
+
+```sh
+# Hub only (default Shawn-style blind push past the hub sensor)
+HAS_HUB=1 HAS_TOOLHEAD=0 sh install.sh
+
+# Hub + Canvas toolhead sensor (guided feed to the extruder inlet)
+HAS_HUB=1 HAS_TOOLHEAD=1 sh install.sh
+
+# Toolhead-only / hub-less
+HAS_HUB=0 HAS_TOOLHEAD=1 sh install.sh
+```
+
+Choices are written to `/user-resource/ace-addon/install_options` and into
+`variable_has_hub` / `variable_has_toolhead` in `ace-addon.cfg`. You can also
+toggle later with `ACE_SET_HAS_HUB ENABLE=0|1` and `ACE_SET_HAS_TOOLHEAD ENABLE=0|1`
+(toolhead still needs `[include ace_toolhead.cfg]` installed).
 (`-k` matches how COSMOS's own updater fetches from GitHub — certificate
 verification is not reliable on the device.)
 
@@ -132,6 +156,7 @@ If your `scp` rejects `-O` as an unknown option, it is an older client that
 already uses the classic protocol — just omit the flag.
 
 The installer is idempotent — re-run it any time. It:
+- asks (or reads `HAS_HUB` / `HAS_TOOLHEAD`) which sensors you have
 - copies the CLI tool, keep-alive script and config to `/user-resource/ace-addon/`
 - installs the keep-alive service (`/etc/init.d/ace-keepalive`, started at boot)
 - installs the Mainsail panel to `/user-resource/webui-addons/panels/cosmoace/`,
@@ -139,12 +164,15 @@ The installer is idempotent — re-run it any time. It:
   loader plus `/etc/init.d/cosmoace-webui`, which serves a patched Mainsail
   entry point from `/etc/webui` through Moonraker's existing static serving —
   no system files are modified
-- installs the macro set to `/etc/klipper/config/ace-addon.cfg`
+- installs the macro set to `/etc/klipper/config/ace-addon.cfg` and patches
+  `variable_has_hub` / `variable_has_toolhead`
+- when `HAS_TOOLHEAD=1`, installs `/etc/klipper/config/ace_toolhead.cfg` and
+  `[include ace_toolhead.cfg]`
 - adds `[include ace-addon.cfg]` to `printer.cfg`
 - removes the older long-running daemon service, if a previous version left one
 - restarts Klipper
 
-`ace-addon.conf` is preserved unless it contains settings that are broken on current COSMOS. The macro file (`ace-addon.cfg`) is replaced on every install when it differs from the shipped version — your previous copy is backed up to `/etc/klipper/config/config-backups/`, so re-apply tuning like `variable_load_to_printhead_mm` from there.
+`ace-addon.conf` is preserved unless it contains settings that are broken on current COSMOS. The macro file (`ace-addon.cfg`) is replaced on every install when it differs from the shipped version — your previous copy is backed up to `/etc/klipper/config/config-backups/`, so re-apply tuning like `variable_load_to_printhead_mm` (or the toolhead search lengths) from there.
 
 ## Slicer Setup
 

@@ -13,11 +13,55 @@ INCLUDE_LINE="[include ace-addon.cfg]"
 SAVE_CONFIG_MARKER='^#\*# <-* SAVE_CONFIG -*>'
 STAMP="$(date +%Y%m%d_%H%M%S)"
 
-required_files="files/ace-addon.py files/ace-addon.conf files/ace-command.sh files/ace_macros.cfg files/ace-keepalive.sh files/ace-keepalive-init"
+required_files="files/ace-addon.py files/ace-addon.conf files/ace-command.sh files/ace_macros.cfg files/ace_toolhead.cfg files/ace-keepalive.sh files/ace-keepalive-init"
+TOOLHEAD_CFG="${KLIPPER_CONFIG_DIR}/ace_toolhead.cfg"
+TOOLHEAD_INCLUDE="[include ace_toolhead.cfg]"
+OPTIONS_FILE="${ADDON_DIR}/install_options"
 
 fail() {
     echo "ERROR: $1" >&2
     exit 1
+}
+
+# Normalize 0/1 / true/false / yes/no into 0 or 1. Empty -> default.
+normalize_bool() {
+    raw="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+    default="$2"
+    case "$raw" in
+        "" ) printf '%s' "$default" ;;
+        1|y|yes|true|on ) printf '1' ;;
+        0|n|no|false|off ) printf '0' ;;
+        * ) fail "Invalid boolean '$1' (use 0/1, yes/no, true/false)" ;;
+    esac
+}
+
+ask_yes_no() {
+    # usage: ask_yes_no "Prompt" default(0|1)
+    prompt="$1"
+    default="$2"
+    if [ "$default" = "1" ]; then
+        hint="Y/n"
+    else
+        hint="y/N"
+    fi
+    printf '%s [%s]: ' "$prompt" "$hint" >&2
+    # Non-interactive (no TTY): keep the default.
+    if [ ! -t 0 ]; then
+        echo "(no TTY, using default ${default})" >&2
+        printf '%s' "$default"
+        return
+    fi
+    read -r ans || ans=""
+    ans="$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')"
+    case "$ans" in
+        "" ) printf '%s' "$default" ;;
+        y|yes|1|true|on ) printf '1' ;;
+        n|no|0|false|off ) printf '0' ;;
+        * )
+            echo "Unrecognized answer '$ans'; using default ${default}." >&2
+            printf '%s' "$default"
+            ;;
+    esac
 }
 
 [ "$(id -u)" -eq 0 ] || fail "Run as root."
@@ -25,6 +69,24 @@ fail() {
 for file in $required_files; do
     [ -f "${SCRIPT_DIR}/${file}" ] || fail "Missing ${file} in add-on directory."
 done
+
+# --- Hardware options -------------------------------------------------------
+# Env vars win (non-interactive): HAS_HUB=1 HAS_TOOLHEAD=1 ./install.sh
+# Otherwise prompt on a TTY. Defaults: hub yes, toolhead no (Shawn baseline).
+if [ -n "${HAS_HUB+x}" ]; then
+    HAS_HUB="$(normalize_bool "${HAS_HUB}" 1)"
+else
+    HAS_HUB="$(ask_yes_no "Filament hub / chassis runout sensor (PC0 staging)?" 1)"
+fi
+if [ -n "${HAS_TOOLHEAD+x}" ]; then
+    HAS_TOOLHEAD="$(normalize_bool "${HAS_TOOLHEAD}" 0)"
+else
+    HAS_TOOLHEAD="$(ask_yes_no "Toolhead filament sensor (Canvas/CC1, hotend:PB2)?" 0)"
+fi
+if [ "$HAS_HUB" = "0" ] && [ "$HAS_TOOLHEAD" = "0" ]; then
+    fail "Need at least one of HAS_HUB=1 or HAS_TOOLHEAD=1."
+fi
+echo "Install options: HAS_HUB=${HAS_HUB} HAS_TOOLHEAD=${HAS_TOOLHEAD}"
 
 # Sanity check: this must be a COSMOS printer.
 [ -f "$PRINTER_CFG" ] || fail "${PRINTER_CFG} not found. Is this a COSMOS install?"
@@ -129,9 +191,10 @@ chmod 0644 "${ADDON_DIR}/ace-addon.conf"
 # Macro config: old versions call M729 (now an emergency stop on COSMOS) and
 # the wrong sensor object, so an outdated file must not be preserved as-is.
 # (md5sum, not cmp: cmp is not a guaranteed busybox applet on this image.)
+# Always re-apply has_hub / has_toolhead after copy so reinstalls honor options.
 if [ -f "$MACROS_CFG" ]; then
     if [ "$(md5sum < "${SCRIPT_DIR}/files/ace_macros.cfg")" = "$(md5sum < "$MACROS_CFG")" ]; then
-        echo "Macro config already up to date."
+        echo "Macro config already up to date (will still apply HAS_* options)."
     else
         echo "Backing up existing macro config to ${BACKUP_DIR}/ace-addon-${STAMP}.cfg"
         echo "NOTE: re-apply your tuning (e.g. variable_load_to_printhead_mm) to the new ${MACROS_CFG}."
@@ -143,6 +206,42 @@ else
     cp "${SCRIPT_DIR}/files/ace_macros.cfg" "$MACROS_CFG"
 fi
 chmod 0644 "$MACROS_CFG"
+
+# Patch install-time sensor options into the live macro config.
+sed -i "s/^variable_has_hub:.*/variable_has_hub: ${HAS_HUB}/" "$MACROS_CFG"
+sed -i "s/^variable_has_toolhead:.*/variable_has_toolhead: ${HAS_TOOLHEAD}/" "$MACROS_CFG"
+printf 'HAS_HUB=%s\nHAS_TOOLHEAD=%s\n' "$HAS_HUB" "$HAS_TOOLHEAD" > "${OPTIONS_FILE}"
+chmod 0644 "${OPTIONS_FILE}"
+echo "Wrote ${OPTIONS_FILE}"
+
+# Optional Canvas/CC1 toolhead hardware (only when HAS_TOOLHEAD=1).
+if [ "$HAS_TOOLHEAD" = "1" ]; then
+    echo "Installing toolhead hardware config to ${TOOLHEAD_CFG}"
+    cp "${SCRIPT_DIR}/files/ace_toolhead.cfg" "$TOOLHEAD_CFG"
+    chmod 0644 "$TOOLHEAD_CFG"
+    if grep -q '^\[include ace_toolhead\.cfg\]' "$PRINTER_CFG"; then
+        echo "printer.cfg already includes ace_toolhead.cfg"
+    elif grep -q "$SAVE_CONFIG_MARKER" "$PRINTER_CFG"; then
+        echo "Adding ${TOOLHEAD_INCLUDE} to printer.cfg (before SAVE_CONFIG block)..."
+        awk -v inc="$TOOLHEAD_INCLUDE" '
+            /^#\*# <-* SAVE_CONFIG -*>/ && !done { print inc; print ""; done=1 }
+            { print }
+        ' "$PRINTER_CFG" > "${PRINTER_CFG}.tmp"
+        mv "${PRINTER_CFG}.tmp" "$PRINTER_CFG"
+    else
+        echo "Adding ${TOOLHEAD_INCLUDE} to printer.cfg..."
+        printf '\n%s\n' "$TOOLHEAD_INCLUDE" >> "$PRINTER_CFG"
+    fi
+else
+    if [ -f "$TOOLHEAD_CFG" ]; then
+        echo "HAS_TOOLHEAD=0: removing ${TOOLHEAD_CFG}"
+        rm -f "$TOOLHEAD_CFG"
+    fi
+    if [ -f "$PRINTER_CFG" ] && grep -q '^\[include ace_toolhead\.cfg\][[:space:]]*$' "$PRINTER_CFG"; then
+        echo "HAS_TOOLHEAD=0: removing ace_toolhead.cfg include from printer.cfg"
+        sed -i '/^\[include ace_toolhead\.cfg\][[:space:]]*$/d' "$PRINTER_CFG"
+    fi
+fi
 
 # Wire the macros into printer.cfg. The include must sit before any
 # SAVE_CONFIG autosave block, which has to stay at the end of the file.
@@ -167,7 +266,14 @@ echo ""
 echo "CosmoACE installed."
 echo "  Addon config:    ${ADDON_DIR}/ace-addon.conf"
 echo "  Editable macros: ${MACROS_CFG}"
+echo "  Options:         HAS_HUB=${HAS_HUB} HAS_TOOLHEAD=${HAS_TOOLHEAD} (${OPTIONS_FILE})"
 echo "  Keep-alive:      /etc/init.d/ace-keepalive (status|restart)"
-echo "Tune variable_load_to_printhead_mm in ${MACROS_CFG} for your setup."
+if [ "$HAS_TOOLHEAD" = "1" ]; then
+    echo "  Toolhead cfg:    ${TOOLHEAD_CFG}"
+    echo "Tune variable_load_to_toolhead_search_mm / variable_load_past_toolhead_mm in ${MACROS_CFG}."
+else
+    echo "Tune variable_load_to_printhead_mm in ${MACROS_CFG} for your setup."
+fi
+echo "Re-run with HAS_TOOLHEAD=1 HAS_HUB=1 to change options non-interactively."
 echo "A second chained ACE is auto-detected as slots 5-8 (T4-T7) - no config."
 echo "After a COSMOS factory reset, re-run this installer (files in /user-resource survive; /etc does not)."
