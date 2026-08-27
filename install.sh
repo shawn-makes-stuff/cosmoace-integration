@@ -16,7 +16,9 @@ STAMP="$(date +%Y%m%d_%H%M%S)"
 required_files="files/ace-addon.py files/ace-addon.conf files/ace-command.sh files/ace_macros.cfg files/ace_toolhead.cfg files/ace-keepalive.sh files/ace-keepalive-init"
 TOOLHEAD_CFG="${KLIPPER_CONFIG_DIR}/ace_toolhead.cfg"
 TOOLHEAD_INCLUDE="[include ace_toolhead.cfg]"
-OPTIONS_FILE="${ADDON_DIR}/install_options"
+ACE_CONF="${ADDON_DIR}/ace-addon.conf"
+HUB_SENSOR_NAME="filament_sensor"
+TOOLHEAD_SENSOR_NAME="toolhead_runout_sensor"
 
 fail() {
     echo "ERROR: $1" >&2
@@ -62,6 +64,39 @@ ask_yes_no() {
             printf '%s' "$default"
             ;;
     esac
+}
+
+# Set or insert KEY = VALUE under [SECTION] in an ini-style file.
+set_ini_key() {
+    file="$1"
+    section="$2"
+    key="$3"
+    value="$4"
+    tmp="${file}.tmp.$$"
+    if [ ! -f "$file" ]; then
+        fail "set_ini_key: missing ${file}"
+    fi
+    if ! grep -q "^\[${section}\]" "$file"; then
+        printf '\n[%s]\n%s = %s\n' "$section" "$key" "$value" >> "$file"
+        return
+    fi
+    awk -v section="$section" -v key="$key" -v value="$value" '
+        BEGIN { insec = 0; done = 0 }
+        /^\[/ {
+            if (insec && !done) { print key " = " value; done = 1 }
+            insec = ($0 == "[" section "]")
+            print
+            next
+        }
+        insec && $0 ~ ("^[[:space:]]*" key "[[:space:]]*=") {
+            if (!done) { print key " = " value; done = 1 }
+            next
+        }
+        { print }
+        END {
+            if (insec && !done) print key " = " value
+        }
+    ' "$file" > "$tmp" && mv "$tmp" "$file"
 }
 
 [ "$(id -u)" -eq 0 ] || fail "Run as root."
@@ -174,27 +209,34 @@ fi
 # on current COSMOS (Moonraker port 7125, toolhead MCU tty, old sensor name) or
 # is left over from the daemon build, whose [daemon] section is dead and whose
 # pinned serial_port would disable multi-ACE auto-detection.
-if [ -f "${ADDON_DIR}/ace-addon.conf" ]; then
-    if grep -qE '^[[:space:]]*url[[:space:]]*=.*:7125|^[[:space:]]*serial_port[[:space:]]*=[[:space:]]*/dev/ttyACM0[[:space:]]*$|^[[:space:]]*sensor_name[[:space:]]*=[[:space:]]*runout[[:space:]]*$|^[[:space:]]*\[daemon\]' "${ADDON_DIR}/ace-addon.conf"; then
+if [ -f "$ACE_CONF" ]; then
+    if grep -qE '^[[:space:]]*url[[:space:]]*=.*:7125|^[[:space:]]*serial_port[[:space:]]*=[[:space:]]*/dev/ttyACM0[[:space:]]*$|^[[:space:]]*sensor_name[[:space:]]*=[[:space:]]*runout[[:space:]]*$|^[[:space:]]*\[daemon\]' "$ACE_CONF"; then
         echo "Existing ace-addon.conf has settings incompatible with current COSMOS."
-        echo "Backing it up to ${ADDON_DIR}/ace-addon.conf.${STAMP}.bak and installing new defaults."
-        mv "${ADDON_DIR}/ace-addon.conf" "${ADDON_DIR}/ace-addon.conf.${STAMP}.bak"
-        cp "${SCRIPT_DIR}/files/ace-addon.conf" "${ADDON_DIR}/ace-addon.conf"
+        echo "Backing it up to ${ACE_CONF}.${STAMP}.bak and installing new defaults."
+        mv "$ACE_CONF" "${ACE_CONF}.${STAMP}.bak"
+        cp "${SCRIPT_DIR}/files/ace-addon.conf" "$ACE_CONF"
     else
-        echo "Preserving existing ${ADDON_DIR}/ace-addon.conf"
+        echo "Preserving existing ${ACE_CONF}"
     fi
 else
-    cp "${SCRIPT_DIR}/files/ace-addon.conf" "${ADDON_DIR}/ace-addon.conf"
+    cp "${SCRIPT_DIR}/files/ace-addon.conf" "$ACE_CONF"
 fi
-chmod 0644 "${ADDON_DIR}/ace-addon.conf"
+
+# Persist hub/toolhead options in ace-addon.conf ([klipper] section).
+set_ini_key "$ACE_CONF" klipper has_hub "$HAS_HUB"
+set_ini_key "$ACE_CONF" klipper has_toolhead "$HAS_TOOLHEAD"
+set_ini_key "$ACE_CONF" klipper sensor_name "$HUB_SENSOR_NAME"
+set_ini_key "$ACE_CONF" klipper toolhead_sensor_name "$TOOLHEAD_SENSOR_NAME"
+chmod 0644 "$ACE_CONF"
+echo "Wrote sensor options to ${ACE_CONF}: has_hub=${HAS_HUB} has_toolhead=${HAS_TOOLHEAD}"
 
 # Macro config: old versions call M729 (now an emergency stop on COSMOS) and
 # the wrong sensor object, so an outdated file must not be preserved as-is.
 # (md5sum, not cmp: cmp is not a guaranteed busybox applet on this image.)
-# Always re-apply has_hub / has_toolhead after copy so reinstalls honor options.
+# Always re-sync has_* / sensor names from ace-addon.conf after copy.
 if [ -f "$MACROS_CFG" ]; then
     if [ "$(md5sum < "${SCRIPT_DIR}/files/ace_macros.cfg")" = "$(md5sum < "$MACROS_CFG")" ]; then
-        echo "Macro config already up to date (will still apply HAS_* options)."
+        echo "Macro config already up to date (will still sync HAS_* from ace-addon.conf)."
     else
         echo "Backing up existing macro config to ${BACKUP_DIR}/ace-addon-${STAMP}.cfg"
         echo "NOTE: re-apply your tuning (e.g. variable_load_to_printhead_mm) to the new ${MACROS_CFG}."
@@ -207,13 +249,13 @@ else
 fi
 chmod 0644 "$MACROS_CFG"
 
-# Patch install-time sensor options into the live macro config.
+# Mirror ace-addon.conf sensor options into Klipper macro variables.
 sed -i "s/^variable_has_hub:.*/variable_has_hub: ${HAS_HUB}/" "$MACROS_CFG"
 sed -i "s/^variable_has_toolhead:.*/variable_has_toolhead: ${HAS_TOOLHEAD}/" "$MACROS_CFG"
-printf 'HAS_HUB=%s\nHAS_TOOLHEAD=%s\n' "$HAS_HUB" "$HAS_TOOLHEAD" > "${OPTIONS_FILE}"
-chmod 0644 "${OPTIONS_FILE}"
-echo "Wrote ${OPTIONS_FILE}"
-
+sed -i "s/^variable_sensor_name:.*/variable_sensor_name: \"${HUB_SENSOR_NAME}\"/" "$MACROS_CFG"
+sed -i "s/^variable_toolhead_sensor_name:.*/variable_toolhead_sensor_name: \"${TOOLHEAD_SENSOR_NAME}\"/" "$MACROS_CFG"
+# Drop legacy install_options file if an older run left one behind.
+rm -f "${ADDON_DIR}/install_options"
 # Optional Canvas/CC1 toolhead hardware (only when HAS_TOOLHEAD=1).
 if [ "$HAS_TOOLHEAD" = "1" ]; then
     echo "Installing toolhead hardware config to ${TOOLHEAD_CFG}"
@@ -264,9 +306,9 @@ echo "Restarting Klipper..."
 
 echo ""
 echo "CosmoACE installed."
-echo "  Addon config:    ${ADDON_DIR}/ace-addon.conf"
+echo "  Addon config:    ${ACE_CONF}"
 echo "  Editable macros: ${MACROS_CFG}"
-echo "  Options:         HAS_HUB=${HAS_HUB} HAS_TOOLHEAD=${HAS_TOOLHEAD} (${OPTIONS_FILE})"
+echo "  Options:         has_hub=${HAS_HUB} has_toolhead=${HAS_TOOLHEAD} (in ${ACE_CONF} [klipper])"
 echo "  Keep-alive:      /etc/init.d/ace-keepalive (status|restart)"
 if [ "$HAS_TOOLHEAD" = "1" ]; then
     echo "  Toolhead cfg:    ${TOOLHEAD_CFG}"

@@ -57,9 +57,10 @@ None. The CosmoACE installer replaces the stock COSMOS
 (same object name, same pin `PC0`). The COSMOS `PRINT_START`/`PAUSE`/`RESUME`
 macros keep working because the object name is unchanged.
 
-If you move the sensor to a different object, update `variable_sensor_name`
-in `/etc/klipper/config/ace-addon.cfg` (macros) and `sensor_name` in
-`/user-resource/ace-addon/ace-addon.conf` (service).
+If you move the sensor to a different object, update `sensor_name` /
+`toolhead_sensor_name` (and `has_hub` / `has_toolhead`) in
+`/user-resource/ace-addon/ace-addon.conf` `[klipper]`, then re-run `install.sh`
+(or mirror the same values into `/etc/klipper/config/ace-addon.cfg`).
 
 ## Why not the stock COSMOS start/end gcode?
 
