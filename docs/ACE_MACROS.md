@@ -24,9 +24,12 @@ Edit these in `/etc/klipper/config/ace-addon.cfg`.
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
-| `variable_sensor_name` | `filament_sensor` | Filament sensor object name (COSMOS stock name — keep it unless you know why). |
-| `variable_load_to_sensor_search_mm` | `1200` | Max feed distance while searching for the sensor. |
-| `variable_load_to_printhead_mm` | `730` | **The value to tune**: distance from sensor to printhead. |
+| `variable_sensor_name` | `filament_sensor` | Hub filament sensor object name (COSMOS stock name — keep it unless you know why). |
+| `variable_load_to_sensor_search_mm` | `1200` | Max feed distance while searching for the hub sensor. |
+| `variable_load_to_printhead_mm` | `730` | **The value to tune**: distance from hub sensor to printhead. Used as the blind push when no toolhead sensor is present, and it sets the full-unload retract length either way — so tune it even with a toolhead sensor fitted. |
+| `variable_toolhead_sensor_name` | `toolhead_runout_sensor` | Object declared by the optional `ace_toolhead.cfg`. Its presence is what enables the guided load path. |
+| `variable_load_to_toolhead_search_mm` | `900` | Max feed from the hub sensor while searching for the toolhead sensor. Only needs to exceed the real run. Toolhead sensor only. |
+| `variable_load_past_toolhead_mm` | `15` | Push after the toolhead switch trips, to seat filament in the extruder gears. Measured net of overshoot — see below. Toolhead sensor only. |
 | `variable_unload_to_sensor_search_mm` | `900` | Max retract distance while waiting for the sensor to clear (manual `ACE_UNLOAD_TO_SENSOR`). |
 | `variable_unload_extra_mm` | `170` | Added to `load_to_printhead_mm` for the full-unload retract (hub clearance + slip margin), run as one completed unwind so the ACE respools. Over-length is safe. |
 | `variable_retract_past_sensor_mm` | `90` | Extra retract past the sensor to clear the hub path. |
@@ -48,7 +51,8 @@ Edit these in `/etc/klipper/config/ace-addon.cfg`.
 | `ACE_LOAD` | Full manual load of a slot: sensor → printhead → sync → purge → wipe. Leaves ACE feed assist on for the slot. | `SLOT`, opt. `TEMP`, `PURGE` |
 | `ACE_UNLOAD` | Full manual unload: stop feed assist, cut, one completed retract back to the slot (respools), verify sensor clear. Heats if needed. | opt. `SLOT` |
 | `ACE_LOAD_TO_SENSOR` | Feed a slot until the sensor triggers. | `SLOT` |
-| `ACE_LOAD_TO_PRINTHEAD` | Push the pending slot from sensor to printhead. | opt. `SLOT`, `LENGTH` |
+| `ACE_LOAD_TO_PRINTHEAD` | Push the pending slot from the hub sensor to the printhead. With a toolhead sensor fitted this delegates to `ACE_LOAD_TO_TOOLHEAD` and `LENGTH` is ignored. | opt. `SLOT`, `LENGTH` |
+| `ACE_LOAD_TO_TOOLHEAD` | Feed from the hub sensor until the toolhead sensor triggers, then seat past it. Requires `ace_toolhead.cfg` to be included. | opt. `SLOT`, `SENSOR`, `SEARCH`, `PAST`, `SPEED` |
 | `ACE_UNLOAD_TO_SENSOR` | Retract until the sensor clears. | opt. `SLOT` |
 | `ACE_CLEAR_HUB` | Retract past the sensor until the hub path is confirmed clear. | opt. `SLOT` |
 | `ACE_SYNC_LOAD` | Feed ACE and extruder together through the hotend. | opt. `SLOT` |
@@ -150,3 +154,55 @@ ACE_LOAD_TO_PRINTHEAD SLOT=1 LENGTH=20
 ACE_UNLOAD_TO_SENSOR SLOT=1
 ACE_CLEAR_HUB SLOT=1
 ```
+
+## Optional toolhead sensor
+
+A toolhead filament sensor at the extruder inlet (Canvas / CC1) replaces the
+blind `load_to_printhead_mm` push with a guided feed that stops on the switch.
+Hub staging through `filament_sensor` is unchanged and always runs first — this
+only changes the second leg of the load.
+
+### Enabling
+
+`install.sh` copies `ace_toolhead.cfg` to `/etc/klipper/config/` but does not
+include it, so it is inert until you opt in. Add one line to `printer.cfg`
+(anywhere above the `SAVE_CONFIG` block) and `RESTART`:
+
+```ini
+[include ace_toolhead.cfg]
+```
+
+That include is the entire switch — the macros enable the guided path whenever
+the sensor object exists. There is no enable flag to keep in sync, no reinstall
+needed, and toggling never rewrites `ace-addon.cfg`, so your tuning survives.
+To disable, delete the line and `RESTART`.
+
+`ACE_STATUS` reports `toolhead=toolhead_runout_sensor:-1` when the file is not
+included, and `:0` / `:1` when it is.
+
+### What changes
+
+| Stage | Without toolhead sensor | With toolhead sensor |
+| --- | --- | --- |
+| Feed to hub | `feed-to-sensor` on `filament_sensor` | same |
+| Hub → printhead | blind `feed-wait` of `load_to_printhead_mm` | `feed-to-sensor` on `toolhead_runout_sensor`, then `load_past_toolhead_mm` |
+| Sync / purge | unchanged | unchanged |
+| Unload | one completed retract, verify hub clear | same, plus verify toolhead clear first |
+| Runout during print | hub `RUNOUT` → `PAUSE` | plus toolhead `TOOLHEAD_RUNOUT` → `PAUSE` as a backstop |
+
+### Tuning `load_past_toolhead_mm`
+
+The sensor is polled through Moonraker at ~50ms while feeding at
+`feed_speed_mm_s` (50mm/s default), so the ACE coasts a few mm past the switch
+before it is told to stop. The filament therefore ends up
+`load_past_toolhead_mm` **plus that overshoot** into the extruder. Start low and
+raise it only if sync-load fails to catch. Lowering `feed_speed_mm_s` shrinks
+the overshoot if you need the seat depth to be repeatable.
+
+### Pin usage
+
+`ace_toolhead.cfg` claims `hotend:PB2`. Verified free on stock COSMOS 26.07.0 —
+the hotend MCU is an `stm32f401xc` and stock uses only
+`PC13/PC14/PC15/PB6/PA3/PB5/PA0/PC8/PA1/PC9/PA4/PC6/PC7` on it. Stock also
+declares no `gcode_button` objects and exactly one `filament_switch_sensor`
+(`filament_sensor`, PC0), so there is no name or pin collision.

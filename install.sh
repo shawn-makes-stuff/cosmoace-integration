@@ -15,139 +15,10 @@ STAMP="$(date +%Y%m%d_%H%M%S)"
 
 required_files="files/ace-addon.py files/ace-addon.conf files/ace-command.sh files/ace_macros.cfg files/ace_toolhead.cfg files/ace-keepalive.sh files/ace-keepalive-init"
 TOOLHEAD_CFG="${KLIPPER_CONFIG_DIR}/ace_toolhead.cfg"
-TOOLHEAD_INCLUDE="[include ace_toolhead.cfg]"
-ACE_CONF="${ADDON_DIR}/ace-addon.conf"
-DEFAULT_SENSOR_NAME="filament_sensor"
-DEFAULT_TOOLHEAD_SENSOR_NAME="toolhead_runout_sensor"
 
 fail() {
     echo "ERROR: $1" >&2
     exit 1
-}
-
-# Normalize 0/1 / true/false / yes/no into 0 or 1. Empty -> default.
-normalize_bool() {
-    raw="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-    default="$2"
-    case "$raw" in
-        "" ) printf '%s' "$default" ;;
-        1|y|yes|true|on ) printf '1' ;;
-        0|n|no|false|off ) printf '0' ;;
-        * ) fail "Invalid boolean '$1' (use 0/1, yes/no, true/false)" ;;
-    esac
-}
-
-ask_yes_no() {
-    # usage: ask_yes_no "Prompt" default(0|1)
-    prompt="$1"
-    default="$2"
-    if [ "$default" = "1" ]; then
-        hint="Y/n"
-    else
-        hint="y/N"
-    fi
-    printf '%s [%s]: ' "$prompt" "$hint" >&2
-    # Non-interactive (no TTY): keep the default.
-    if [ ! -t 0 ]; then
-        echo "(no TTY, using default ${default})" >&2
-        printf '%s' "$default"
-        return
-    fi
-    read -r ans || ans=""
-    ans="$(printf '%s' "$ans" | tr '[:upper:]' '[:lower:]')"
-    case "$ans" in
-        "" ) printf '%s' "$default" ;;
-        y|yes|1|true|on ) printf '1' ;;
-        n|no|0|false|off ) printf '0' ;;
-        * )
-            echo "Unrecognized answer '$ans'; using default ${default}." >&2
-            printf '%s' "$default"
-            ;;
-    esac
-}
-
-# Set or insert KEY = VALUE under [SECTION] in an ini-style file.
-set_ini_key() {
-    file="$1"
-    section="$2"
-    key="$3"
-    value="$4"
-    tmp="${file}.tmp.$$"
-    if [ ! -f "$file" ]; then
-        fail "set_ini_key: missing ${file}"
-    fi
-    if ! grep -q "^\[${section}\]" "$file"; then
-        printf '\n[%s]\n%s = %s\n' "$section" "$key" "$value" >> "$file"
-        return
-    fi
-    awk -v section="$section" -v key="$key" -v value="$value" '
-        BEGIN { insec = 0; done = 0 }
-        /^\[/ {
-            if (insec && !done) { print key " = " value; done = 1 }
-            insec = ($0 == "[" section "]")
-            print
-            next
-        }
-        insec && $0 ~ ("^[[:space:]]*" key "[[:space:]]*=") {
-            if (!done) { print key " = " value; done = 1 }
-            next
-        }
-        { print }
-        END {
-            if (insec && !done) print key " = " value
-        }
-    ' "$file" > "$tmp" && mv "$tmp" "$file"
-}
-
-# Read KEY from [SECTION] in an ini-style file, or print default.
-get_ini_key() {
-    file="$1"
-    section="$2"
-    key="$3"
-    default="$4"
-    if [ ! -f "$file" ]; then
-        printf '%s' "$default"
-        return
-    fi
-    awk -v section="$section" -v key="$key" -v default="$default" '
-        /^\[/ { insec = ($0 == "[" section "]"); next }
-        insec && $1 == key {
-            sub(/^[^=]*=[[:space:]]*/, "")
-            print
-            found = 1
-            exit
-        }
-        END { if (!found) print default }
-    ' "$file"
-}
-
-# Default for HAS_TOOLHEAD: ace-addon.conf, then existing toolhead hardware.
-read_toolhead_default() {
-    if [ -f "$ACE_CONF" ]; then
-        val="$(get_ini_key "$ACE_CONF" klipper has_toolhead "0")"
-        case "$val" in
-            0|1) printf '%s' "$val"; return ;;
-        esac
-    fi
-    if [ -f "$TOOLHEAD_CFG" ]; then
-        printf '1'
-        return
-    fi
-    if [ -f "$PRINTER_CFG" ] && grep -q '^\[include ace_toolhead\.cfg\][[:space:]]*$' "$PRINTER_CFG"; then
-        printf '1'
-        return
-    fi
-    printf '0'
-}
-
-apply_macro_sensor_options() {
-    target="$1"
-    has_toolhead="$2"
-    sensor_name="$3"
-    toolhead_sensor_name="$4"
-    sed -i "s/^variable_has_toolhead:.*/variable_has_toolhead: ${has_toolhead}/" "$target"
-    sed -i "s/^variable_sensor_name:.*/variable_sensor_name: \"${sensor_name}\"/" "$target"
-    sed -i "s/^variable_toolhead_sensor_name:.*/variable_toolhead_sensor_name: \"${toolhead_sensor_name}\"/" "$target"
 }
 
 [ "$(id -u)" -eq 0 ] || fail "Run as root."
@@ -242,91 +113,44 @@ fi
 # on current COSMOS (Moonraker port 7125, toolhead MCU tty, old sensor name) or
 # is left over from the daemon build, whose [daemon] section is dead and whose
 # pinned serial_port would disable multi-ACE auto-detection.
-if [ -f "$ACE_CONF" ]; then
-    if grep -qE '^[[:space:]]*url[[:space:]]*=.*:7125|^[[:space:]]*serial_port[[:space:]]*=[[:space:]]*/dev/ttyACM0[[:space:]]*$|^[[:space:]]*sensor_name[[:space:]]*=[[:space:]]*runout[[:space:]]*$|^[[:space:]]*\[daemon\]' "$ACE_CONF"; then
+if [ -f "${ADDON_DIR}/ace-addon.conf" ]; then
+    if grep -qE '^[[:space:]]*url[[:space:]]*=.*:7125|^[[:space:]]*serial_port[[:space:]]*=[[:space:]]*/dev/ttyACM0[[:space:]]*$|^[[:space:]]*sensor_name[[:space:]]*=[[:space:]]*runout[[:space:]]*$|^[[:space:]]*\[daemon\]' "${ADDON_DIR}/ace-addon.conf"; then
         echo "Existing ace-addon.conf has settings incompatible with current COSMOS."
-        echo "Backing it up to ${ACE_CONF}.${STAMP}.bak and installing new defaults."
-        mv "$ACE_CONF" "${ACE_CONF}.${STAMP}.bak"
-        cp "${SCRIPT_DIR}/files/ace-addon.conf" "$ACE_CONF"
+        echo "Backing it up to ${ADDON_DIR}/ace-addon.conf.${STAMP}.bak and installing new defaults."
+        mv "${ADDON_DIR}/ace-addon.conf" "${ADDON_DIR}/ace-addon.conf.${STAMP}.bak"
+        cp "${SCRIPT_DIR}/files/ace-addon.conf" "${ADDON_DIR}/ace-addon.conf"
     else
-        echo "Preserving existing ${ACE_CONF}"
+        echo "Preserving existing ${ADDON_DIR}/ace-addon.conf"
     fi
 else
-    cp "${SCRIPT_DIR}/files/ace-addon.conf" "$ACE_CONF"
+    cp "${SCRIPT_DIR}/files/ace-addon.conf" "${ADDON_DIR}/ace-addon.conf"
 fi
-
-# --- Toolhead option (HAS_TOOLHEAD only; hub staging is always on) ----------
-TOOLHEAD_DEFAULT="$(read_toolhead_default)"
-if [ -n "${HAS_TOOLHEAD+x}" ]; then
-    HAS_TOOLHEAD="$(normalize_bool "${HAS_TOOLHEAD}" "$TOOLHEAD_DEFAULT")"
-else
-    HAS_TOOLHEAD="$(ask_yes_no "Toolhead filament sensor (Canvas/CC1, hotend:PB2)?" "$TOOLHEAD_DEFAULT")"
-fi
-
-SENSOR_NAME="$(get_ini_key "$ACE_CONF" klipper sensor_name "$DEFAULT_SENSOR_NAME")"
-TOOLHEAD_SENSOR_NAME="$(get_ini_key "$ACE_CONF" klipper toolhead_sensor_name "$DEFAULT_TOOLHEAD_SENSOR_NAME")"
-
-# Persist has_toolhead only — preserve user-tuned sensor object names.
-set_ini_key "$ACE_CONF" klipper has_toolhead "$HAS_TOOLHEAD"
-chmod 0644 "$ACE_CONF"
-echo "Install options: HAS_TOOLHEAD=${HAS_TOOLHEAD} (in ${ACE_CONF} [klipper])"
+chmod 0644 "${ADDON_DIR}/ace-addon.conf"
 
 # Macro config: old versions call M729 (now an emergency stop on COSMOS) and
 # the wrong sensor object, so an outdated file must not be preserved as-is.
 # (md5sum, not cmp: cmp is not a guaranteed busybox applet on this image.)
-# Compare against a template with the same sensor substitutions applied.
-MACROS_TEMPLATE="$(mktemp)"
-cp "${SCRIPT_DIR}/files/ace_macros.cfg" "$MACROS_TEMPLATE"
-apply_macro_sensor_options "$MACROS_TEMPLATE" "$HAS_TOOLHEAD" "$SENSOR_NAME" "$TOOLHEAD_SENSOR_NAME"
-
 if [ -f "$MACROS_CFG" ]; then
-    if [ "$(md5sum < "$MACROS_TEMPLATE")" = "$(md5sum < "$MACROS_CFG")" ]; then
+    if [ "$(md5sum < "${SCRIPT_DIR}/files/ace_macros.cfg")" = "$(md5sum < "$MACROS_CFG")" ]; then
         echo "Macro config already up to date."
     else
         echo "Backing up existing macro config to ${BACKUP_DIR}/ace-addon-${STAMP}.cfg"
         echo "NOTE: re-apply your tuning (e.g. variable_load_to_printhead_mm) to the new ${MACROS_CFG}."
         cp "$MACROS_CFG" "${BACKUP_DIR}/ace-addon-${STAMP}.cfg"
         cp "${SCRIPT_DIR}/files/ace_macros.cfg" "$MACROS_CFG"
-        apply_macro_sensor_options "$MACROS_CFG" "$HAS_TOOLHEAD" "$SENSOR_NAME" "$TOOLHEAD_SENSOR_NAME"
     fi
 else
     echo "Installing macro config to ${MACROS_CFG}"
     cp "${SCRIPT_DIR}/files/ace_macros.cfg" "$MACROS_CFG"
-    apply_macro_sensor_options "$MACROS_CFG" "$HAS_TOOLHEAD" "$SENSOR_NAME" "$TOOLHEAD_SENSOR_NAME"
 fi
-rm -f "$MACROS_TEMPLATE"
 chmod 0644 "$MACROS_CFG"
 
-# Drop legacy install_options file if an older run left one behind.
-rm -f "${ADDON_DIR}/install_options"
-# Optional Canvas/CC1 toolhead hardware (only when HAS_TOOLHEAD=1).
-if [ "$HAS_TOOLHEAD" = "1" ]; then
-    echo "Installing toolhead hardware config to ${TOOLHEAD_CFG}"
-    cp "${SCRIPT_DIR}/files/ace_toolhead.cfg" "$TOOLHEAD_CFG"
-    chmod 0644 "$TOOLHEAD_CFG"
-    if grep -q '^\[include ace_toolhead\.cfg\]' "$PRINTER_CFG"; then
-        echo "printer.cfg already includes ace_toolhead.cfg"
-    elif grep -q "$SAVE_CONFIG_MARKER" "$PRINTER_CFG"; then
-        echo "Adding ${TOOLHEAD_INCLUDE} to printer.cfg (before SAVE_CONFIG block)..."
-        awk -v inc="$TOOLHEAD_INCLUDE" '
-            /^#\*# <-* SAVE_CONFIG -*>/ && !done { print inc; print ""; done=1 }
-            { print }
-        ' "$PRINTER_CFG" > "${PRINTER_CFG}.tmp"
-        mv "${PRINTER_CFG}.tmp" "$PRINTER_CFG"
-    else
-        echo "Adding ${TOOLHEAD_INCLUDE} to printer.cfg..."
-        printf '\n%s\n' "$TOOLHEAD_INCLUDE" >> "$PRINTER_CFG"
-    fi
-else
-    if [ -f "$TOOLHEAD_CFG" ]; then
-        echo "HAS_TOOLHEAD=0: removing ${TOOLHEAD_CFG}"
-        rm -f "$TOOLHEAD_CFG"
-    fi
-    if [ -f "$PRINTER_CFG" ] && grep -q '^\[include ace_toolhead\.cfg\][[:space:]]*$' "$PRINTER_CFG"; then
-        echo "HAS_TOOLHEAD=0: removing ace_toolhead.cfg include from printer.cfg"
-        sed -i '/^\[include ace_toolhead\.cfg\][[:space:]]*$/d' "$PRINTER_CFG"
-    fi
-fi
+# Optional toolhead sensor hardware. Staged but never included: an un-included
+# file is inert, so this is a no-op until the user adds the include line
+# themselves. That keeps the opt-in reversible without a reinstall, and keeps
+# reinstalls from resetting the choice.
+cp "${SCRIPT_DIR}/files/ace_toolhead.cfg" "$TOOLHEAD_CFG"
+chmod 0644 "$TOOLHEAD_CFG"
 
 # Wire the macros into printer.cfg. The include must sit before any
 # SAVE_CONFIG autosave block, which has to stay at the end of the file.
@@ -349,16 +173,14 @@ echo "Restarting Klipper..."
 
 echo ""
 echo "CosmoACE installed."
-echo "  Addon config:    ${ACE_CONF}"
+echo "  Addon config:    ${ADDON_DIR}/ace-addon.conf"
 echo "  Editable macros: ${MACROS_CFG}"
-echo "  Options:         has_toolhead=${HAS_TOOLHEAD} (in ${ACE_CONF} [klipper])"
 echo "  Keep-alive:      /etc/init.d/ace-keepalive (status|restart)"
-if [ "$HAS_TOOLHEAD" = "1" ]; then
-    echo "  Toolhead cfg:    ${TOOLHEAD_CFG}"
-    echo "Tune variable_load_to_toolhead_search_mm / variable_load_past_toolhead_mm in ${MACROS_CFG}."
+echo "Tune variable_load_to_printhead_mm in ${MACROS_CFG} for your setup."
+if grep -q '^\[include ace_toolhead\.cfg\]' "$PRINTER_CFG"; then
+    echo "Toolhead sensor: ENABLED (printer.cfg includes ${TOOLHEAD_CFG})."
 else
-    echo "Tune variable_load_to_printhead_mm in ${MACROS_CFG} for your setup."
+    echo "Toolhead sensor: optional. Add [include ace_toolhead.cfg] to printer.cfg and RESTART to enable."
 fi
-echo "Re-run with HAS_TOOLHEAD=1 to enable the toolhead sensor non-interactively."
 echo "A second chained ACE is auto-detected as slots 5-8 (T4-T7) - no config."
 echo "After a COSMOS factory reset, re-run this installer (files in /user-resource survive; /etc does not)."

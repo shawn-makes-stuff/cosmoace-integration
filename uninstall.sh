@@ -44,7 +44,7 @@ if [ -f "$MACROS_CFG" ]; then
     rm -f "$MACROS_CFG"
 fi
 
-# Optional toolhead hardware include from HAS_TOOLHEAD=1 installs.
+# Optional toolhead sensor: remove the opt-in include and the staged file.
 if [ -f "$PRINTER_CFG" ] && grep -q '^\[include ace_toolhead\.cfg\][[:space:]]*$' "$PRINTER_CFG"; then
     echo "Removing ace_toolhead.cfg include from printer.cfg..."
     sed -i '/^\[include ace_toolhead\.cfg\][[:space:]]*$/d' "$PRINTER_CFG"

@@ -98,30 +98,6 @@ tar xzf cosmoace.tar.gz && rm cosmoace.tar.gz
 sh cosmoace-integration-main/install.sh
 ```
 
-The installer asks one hardware question (or takes an env default when there is no TTY):
-
-| Option | Env | Default | Meaning |
-| --- | --- | --- | --- |
-| Toolhead sensor | `HAS_TOOLHEAD` | from `ace-addon.conf`, else `0` | Canvas/CC1 sensor on `hotend:PB2` (`ace_toolhead.cfg`) |
-
-Hub / chassis staging through `filament_sensor` on PC0 is always enabled (Shawn baseline).
-
-Examples:
-
-```sh
-# Hub only (default — no toolhead sensor file)
-HAS_TOOLHEAD=0 sh install.sh
-
-# Hub + Canvas toolhead sensor (guided feed to the extruder inlet)
-HAS_TOOLHEAD=1 sh install.sh
-```
-
-`has_toolhead` is written to `/user-resource/ace-addon/ace-addon.conf` under `[klipper]`
-and mirrored into `ace-addon.cfg` as `variable_has_toolhead`. Existing
-`sensor_name` / `toolhead_sensor_name` values in the conf are preserved on
-reinstall. You can also toggle at runtime with `ACE_SET_HAS_TOOLHEAD ENABLE=0|1`
-(runtime only until the next install; edit `ace-addon.conf` or re-run install to
-persist). Toolhead hardware still needs `[include ace_toolhead.cfg]` installed.
 (`-k` matches how COSMOS's own updater fetches from GitHub — certificate
 verification is not reliable on the device.)
 
@@ -155,25 +131,37 @@ sh /user-resource/cosmoace-integration/install.sh
 If your `scp` rejects `-O` as an unknown option, it is an older client that
 already uses the classic protocol — just omit the flag.
 
+### Optional: toolhead filament sensor
+
+If you have a toolhead sensor at the extruder inlet (Canvas / CC1), the
+installer already staged `/etc/klipper/config/ace_toolhead.cfg` for you — it is
+inert until included. Add one line to `printer.cfg` above the `SAVE_CONFIG`
+block and `RESTART`:
+
+```ini
+[include ace_toolhead.cfg]
+```
+
+Loads then stop on the toolhead switch instead of the blind
+`load_to_printhead_mm` push. Hub staging is unchanged. Delete the line and
+`RESTART` to go back — no reinstall either way, and your macro tuning is never
+touched. Details in [docs/ACE_MACROS.md](docs/ACE_MACROS.md#optional-toolhead-sensor).
+
 The installer is idempotent — re-run it any time. It:
-- asks (or reads `HAS_TOOLHEAD`) whether you have a toolhead sensor
 - copies the CLI tool, keep-alive script and config to `/user-resource/ace-addon/`
-- writes `has_toolhead` into `ace-addon.conf` `[klipper]` (preserves sensor names)
 - installs the keep-alive service (`/etc/init.d/ace-keepalive`, started at boot)
 - installs the Mainsail panel to `/user-resource/webui-addons/panels/cosmoace/`,
   and on builds without the Mainsail Panel Extender also installs the bundled
   loader plus `/etc/init.d/cosmoace-webui`, which serves a patched Mainsail
   entry point from `/etc/webui` through Moonraker's existing static serving —
   no system files are modified
-- installs the macro set to `/etc/klipper/config/ace-addon.cfg` and mirrors
-  `has_toolhead` into `variable_has_toolhead`
-- when `HAS_TOOLHEAD=1`, installs `/etc/klipper/config/ace_toolhead.cfg` and
-  `[include ace_toolhead.cfg]`
+- installs the macro set to `/etc/klipper/config/ace-addon.cfg`
+- stages the optional `/etc/klipper/config/ace_toolhead.cfg` without including it
 - adds `[include ace-addon.cfg]` to `printer.cfg`
 - removes the older long-running daemon service, if a previous version left one
 - restarts Klipper
 
-`ace-addon.conf` is preserved unless it contains settings that are broken on current COSMOS; `has_toolhead` is updated on each install while `sensor_name` / `toolhead_sensor_name` are left as-is. The macro file (`ace-addon.cfg`) is replaced when it differs from the shipped version (compared after applying the same sensor substitutions) — your previous copy is backed up to `/etc/klipper/config/config-backups/`, so re-apply tuning like `variable_load_to_printhead_mm` (or the toolhead search lengths) from there.
+`ace-addon.conf` is preserved unless it contains settings that are broken on current COSMOS. The macro file (`ace-addon.cfg`) is replaced on every install when it differs from the shipped version — your previous copy is backed up to `/etc/klipper/config/config-backups/`, so re-apply tuning like `variable_load_to_printhead_mm` from there.
 
 ## Slicer Setup
 
