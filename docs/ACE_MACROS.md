@@ -52,7 +52,7 @@ Edit these in `/etc/klipper/config/ace-addon.cfg`.
 | `ACE_UNLOAD` | Full manual unload: stop feed assist, cut, one completed retract back to the slot (respools), verify sensor clear. Heats if needed. | opt. `SLOT` |
 | `ACE_LOAD_TO_SENSOR` | Feed a slot until the sensor triggers. | `SLOT` |
 | `ACE_LOAD_TO_PRINTHEAD` | Push the pending slot from the hub sensor to the printhead. With a toolhead sensor fitted this delegates to `ACE_LOAD_TO_TOOLHEAD` and `LENGTH` is ignored. | opt. `SLOT`, `LENGTH` |
-| `ACE_LOAD_TO_TOOLHEAD` | Feed from the hub sensor until the toolhead sensor triggers, then seat past it. Requires `ace_toolhead.cfg` to be included. | opt. `SLOT`, `SENSOR`, `SEARCH`, `PAST`, `SPEED` |
+| `ACE_LOAD_TO_TOOLHEAD` | Feed from the hub sensor until the toolhead sensor triggers, then seat past it. Defined in `ace_toolhead.cfg`, so it only exists when that file is included — a hub-only printer never sees it in the macro list. | opt. `SLOT`, `SENSOR`, `SEARCH`, `PAST`, `SPEED` |
 | `ACE_UNLOAD_TO_SENSOR` | Retract until the sensor clears. | opt. `SLOT` |
 | `ACE_CLEAR_HUB` | Retract past the sensor until the hub path is confirmed clear. | opt. `SLOT` |
 | `ACE_SYNC_LOAD` | Feed ACE and extruder together through the hotend. | opt. `SLOT` |
@@ -179,6 +179,14 @@ To disable, delete the line and `RESTART`.
 
 `ACE_STATUS` reports `toolhead=toolhead_runout_sensor:-1` when the file is not
 included, and `:0` / `:1` when it is.
+
+`ace_toolhead.cfg` carries both the sensor and `ACE_LOAD_TO_TOOLHEAD`, so on a
+hub-only printer that macro does not exist at all — nothing to hide in the
+Mainsail macro list, and no per-browser UI toggle to keep in sync. The three
+`variable_*` toolhead entries stay in `_ACE_CONFIG` regardless:
+`toolhead_sensor_name` is read on every load, and redefining `_ACE_CONFIG` from
+a second file would replace the whole section under COSMOS's duplicate-section
+override, wiping every other tunable.
 
 ### What changes
 
