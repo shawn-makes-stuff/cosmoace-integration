@@ -651,13 +651,7 @@ class AceController:
         # slower than the feed gear retracts, piling up slack).
         self.retract_mode = cfg_value(cfg, section, "retract_mode", "getint", 0)
         self.dry_fan_speed = cfg_value(cfg, section, "dry_fan_speed", "getint", 7000)
-        self.has_hub = cfg.getboolean("klipper", "has_hub", fallback=True)
-        self.has_toolhead = cfg.getboolean("klipper", "has_toolhead", fallback=False)
         self.sensor_name = cfg.get("klipper", "sensor_name", fallback="filament_sensor").strip() or "filament_sensor"
-        self.toolhead_sensor_name = (
-            cfg.get("klipper", "toolhead_sensor_name", fallback="toolhead_runout_sensor").strip()
-            or "toolhead_runout_sensor"
-        )
         self.last_ace_status: Optional[Dict[str, Any]] = None
         self.last_ace_status_unix: float = 0.0
         self.last_command: Optional[Dict[str, Any]] = None
@@ -1394,10 +1388,7 @@ def parse_config(path: str) -> configparser.ConfigParser:
                 "log_path": "/board-resource/ace-addon.log",
             },
             "klipper": {
-                "has_hub": "1",
-                "has_toolhead": "0",
                 "sensor_name": "filament_sensor",
-                "toolhead_sensor_name": "toolhead_runout_sensor",
             },
             "moonraker": {
                 "url": "http://127.0.0.1",

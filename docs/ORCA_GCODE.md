@@ -58,7 +58,7 @@ None. The CosmoACE installer replaces the stock COSMOS
 macros keep working because the object name is unchanged.
 
 If you move the sensor to a different object, update `sensor_name` /
-`toolhead_sensor_name` (and `has_hub` / `has_toolhead`) in
+`toolhead_sensor_name` (and `has_toolhead` if needed) in
 `/user-resource/ace-addon/ace-addon.conf` `[klipper]`, then re-run `install.sh`
 (or mirror the same values into `/etc/klipper/config/ace-addon.cfg`).
 

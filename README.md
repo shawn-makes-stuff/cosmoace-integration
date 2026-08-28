@@ -93,35 +93,33 @@ SSH into the printer and run:
 
 ```sh
 cd /user-resource
-curl -k -f -S -L -o cosmoace.tar.gz https://github.com/mon5termatt/cosmoace-integration/archive/refs/heads/main.tar.gz
+curl -k -f -S -L -o cosmoace.tar.gz https://github.com/shawn-makes-stuff/cosmoace-integration/archive/refs/heads/main.tar.gz
 tar xzf cosmoace.tar.gz && rm cosmoace.tar.gz
 sh cosmoace-integration-main/install.sh
 ```
 
-The installer asks two hardware questions (or take env defaults when there is no TTY):
+The installer asks one hardware question (or takes an env default when there is no TTY):
 
 | Option | Env | Default | Meaning |
 | --- | --- | --- | --- |
-| Hub / chassis runout | `HAS_HUB` | `1` | Stage loads through `filament_sensor` on PC0 |
-| Toolhead sensor | `HAS_TOOLHEAD` | `0` | Canvas/CC1 sensor on `hotend:PB2` (`ace_toolhead.cfg`) |
+| Toolhead sensor | `HAS_TOOLHEAD` | from `ace-addon.conf`, else `0` | Canvas/CC1 sensor on `hotend:PB2` (`ace_toolhead.cfg`) |
+
+Hub / chassis staging through `filament_sensor` on PC0 is always enabled (Shawn baseline).
 
 Examples:
 
 ```sh
-# Hub only (default Shawn-style blind push past the hub sensor)
-HAS_HUB=1 HAS_TOOLHEAD=0 sh install.sh
+# Hub only (default — no toolhead sensor file)
+HAS_TOOLHEAD=0 sh install.sh
 
 # Hub + Canvas toolhead sensor (guided feed to the extruder inlet)
-HAS_HUB=1 HAS_TOOLHEAD=1 sh install.sh
-
-# Toolhead-only / hub-less
-HAS_HUB=0 HAS_TOOLHEAD=1 sh install.sh
+HAS_TOOLHEAD=1 sh install.sh
 ```
 
-Choices are written to `/user-resource/ace-addon/ace-addon.conf` under `[klipper]`
-(`has_hub`, `has_toolhead`, `sensor_name`, `toolhead_sensor_name`) and mirrored into
-`ace-addon.cfg` macro variables. You can also toggle at runtime with
-`ACE_SET_HAS_HUB ENABLE=0|1` and `ACE_SET_HAS_TOOLHEAD ENABLE=0|1`
+`has_toolhead` is written to `/user-resource/ace-addon/ace-addon.conf` under `[klipper]`
+and mirrored into `ace-addon.cfg` as `variable_has_toolhead`. Existing
+`sensor_name` / `toolhead_sensor_name` values in the conf are preserved on
+reinstall. You can also toggle at runtime with `ACE_SET_HAS_TOOLHEAD ENABLE=0|1`
 (runtime only until the next install; edit `ace-addon.conf` or re-run install to
 persist). Toolhead hardware still needs `[include ace_toolhead.cfg]` installed.
 (`-k` matches how COSMOS's own updater fetches from GitHub — certificate
@@ -158,9 +156,9 @@ If your `scp` rejects `-O` as an unknown option, it is an older client that
 already uses the classic protocol — just omit the flag.
 
 The installer is idempotent — re-run it any time. It:
-- asks (or reads `HAS_HUB` / `HAS_TOOLHEAD`) which sensors you have
+- asks (or reads `HAS_TOOLHEAD`) whether you have a toolhead sensor
 - copies the CLI tool, keep-alive script and config to `/user-resource/ace-addon/`
-- writes `has_hub` / `has_toolhead` / sensor names into `ace-addon.conf` `[klipper]`
+- writes `has_toolhead` into `ace-addon.conf` `[klipper]` (preserves sensor names)
 - installs the keep-alive service (`/etc/init.d/ace-keepalive`, started at boot)
 - installs the Mainsail panel to `/user-resource/webui-addons/panels/cosmoace/`,
   and on builds without the Mainsail Panel Extender also installs the bundled
@@ -168,14 +166,14 @@ The installer is idempotent — re-run it any time. It:
   entry point from `/etc/webui` through Moonraker's existing static serving —
   no system files are modified
 - installs the macro set to `/etc/klipper/config/ace-addon.cfg` and mirrors
-  the `[klipper]` sensor options into `variable_has_hub` / `variable_has_toolhead`
+  `has_toolhead` into `variable_has_toolhead`
 - when `HAS_TOOLHEAD=1`, installs `/etc/klipper/config/ace_toolhead.cfg` and
   `[include ace_toolhead.cfg]`
 - adds `[include ace-addon.cfg]` to `printer.cfg`
 - removes the older long-running daemon service, if a previous version left one
 - restarts Klipper
 
-`ace-addon.conf` is preserved unless it contains settings that are broken on current COSMOS; sensor options from this install are always rewritten into its `[klipper]` section. The macro file (`ace-addon.cfg`) is replaced on every install when it differs from the shipped version — your previous copy is backed up to `/etc/klipper/config/config-backups/`, so re-apply tuning like `variable_load_to_printhead_mm` (or the toolhead search lengths) from there.
+`ace-addon.conf` is preserved unless it contains settings that are broken on current COSMOS; `has_toolhead` is updated on each install while `sensor_name` / `toolhead_sensor_name` are left as-is. The macro file (`ace-addon.cfg`) is replaced when it differs from the shipped version (compared after applying the same sensor substitutions) — your previous copy is backed up to `/etc/klipper/config/config-backups/`, so re-apply tuning like `variable_load_to_printhead_mm` (or the toolhead search lengths) from there.
 
 ## Slicer Setup
 
