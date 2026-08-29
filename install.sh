@@ -69,6 +69,8 @@ echo "Installing ACE keep-alive service..."
 cp "${SCRIPT_DIR}/files/ace-keepalive.sh" "${ADDON_DIR}/ace-keepalive.sh"
 chmod 0755 "${ADDON_DIR}/ace-keepalive.sh"
 cp "${SCRIPT_DIR}/files/ace-keepalive-init" /etc/init.d/ace-keepalive
+# Strip CR so a CRLF source tree (Windows scp/USB) can't break BusyBox's shebang.
+sed -i 's/\r$//' /etc/init.d/ace-keepalive
 chmod 0755 /etc/init.d/ace-keepalive
 for rl in 2 3 4 5; do
     [ -d "/etc/rc${rl}.d" ] && ln -sf ../init.d/ace-keepalive "/etc/rc${rl}.d/S98ace-keepalive"
@@ -99,6 +101,7 @@ elif [ -f "${SCRIPT_DIR}/files/webui-panel/panel.js" ]; then
         chmod 0644 /user-resource/webui-addons/loader.js
         touch /user-resource/webui-addons/.cosmoace-bundled-loader
         cp "${SCRIPT_DIR}/files/webui-loader/cosmoace-webui-init" /etc/init.d/cosmoace-webui
+        sed -i 's/\r$//' /etc/init.d/cosmoace-webui
         chmod 0755 /etc/init.d/cosmoace-webui
         for rl in 2 3 4 5; do
         [ -d "/etc/rc${rl}.d" ] && ln -sf ../init.d/cosmoace-webui "/etc/rc${rl}.d/S97cosmoace-webui"
