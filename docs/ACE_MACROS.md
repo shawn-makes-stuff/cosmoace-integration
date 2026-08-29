@@ -170,7 +170,9 @@ That makes CosmoACE act as if the ACE is not installed for loading:
 
 - **Hub** runout/insert → ignored (manual spool path)
 - **Toolhead** runout (if `ace_toolhead.cfg` is included) → stock `PAUSE STATE=runout` → `LOAD_FILAMENT`
-- `ACE_START` / `ACE_END` → `PRINT_START` / `PRINT_END` (so an ACE-aware slicer profile still works)
+- `ACE_START` still works from the slicer: skips ACE load, ignores hub, requires
+  toolhead filament if that sensor is fitted, then runs stock `PRINT_START`
+- `ACE_END` → `PRINT_END` with **no unload/retract** (filament stays loaded)
 - `ACE_LOAD` / `ACE_UNLOAD` / toolchanges refuse; use `LOAD_FILAMENT` / `UNLOAD_FILAMENT`
 - `ACE_STATUS` shows `bypass=1`
 
