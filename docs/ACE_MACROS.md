@@ -24,6 +24,7 @@ Edit these in `/etc/klipper/config/ace-addon.cfg`.
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
+| `variable_bypass` | `0` | Runtime virtual switch (`ACE_SET_BYPASS`). When `1`, ACE load/unload/toolchange refuse; hub runout uses stock `PAUSE STATE=runout` → `LOAD_FILAMENT`; `ACE_START`/`ACE_END` fall through to `PRINT_START`/`PRINT_END`. Resets on Klipper restart. |
 | `variable_sensor_name` | `filament_sensor` | Hub filament sensor object name (COSMOS stock name — keep it unless you know why). |
 | `variable_load_to_sensor_search_mm` | `1200` | Max feed distance while searching for the hub sensor. |
 | `variable_load_to_printhead_mm` | `730` | **The value to tune**: distance from hub sensor to printhead. Used as the blind push when no toolhead sensor is present, and it sets the full-unload retract length either way — so tune it even with a toolhead sensor fitted. |
@@ -61,6 +62,7 @@ Edit these in `/etc/klipper/config/ace-addon.cfg`.
 | `ACE_STATUS` | Print ACE mode, slots, and live sensor state. | none |
 | `ACE_SLOT_STATUS` | Query slot readiness from the ACE itself. | `SLOT` (1-8) |
 | `ACE_SET_FILAMENT` | Store a slot's material + color on the ACE (`set_filament_info`). | `SLOT`, `TYPE`, `COLOR` (RRGGBB) |
+| `ACE_SET_BYPASS` | Virtual ACE off switch. `ENABLE=1` restores stock `LOAD_FILAMENT` / `PRINT_START` behavior (runtime only until restart). | `ENABLE=0\|1` |
 
 ## Internal Macros
 
@@ -154,6 +156,25 @@ ACE_LOAD_TO_PRINTHEAD SLOT=1 LENGTH=20
 ACE_UNLOAD_TO_SENSOR SLOT=1
 ACE_CLEAR_HUB SLOT=1
 ```
+
+## ACE bypass (manual spool / no ACE)
+
+When you want to feed filament by hand (or leave the ACE powered but unused),
+flip the virtual bypass switch:
+
+```gcode
+ACE_SET_BYPASS ENABLE=1
+```
+
+That makes CosmoACE act as if the ACE is not installed:
+
+- Hub (and toolhead) runout → stock `PAUSE STATE=runout` → `PURGE` + `LOAD_FILAMENT`
+- `ACE_START` / `ACE_END` → `PRINT_START` / `PRINT_END` (so an ACE-aware slicer profile still works)
+- `ACE_LOAD` / `ACE_UNLOAD` / toolchanges refuse; use `LOAD_FILAMENT` / `UNLOAD_FILAMENT`
+- `ACE_STATUS` shows `bypass=1`
+
+`ACE_SET_BYPASS ENABLE=0` turns CosmoACE back on. Bypass is runtime-only and
+resets to off on a Klipper restart.
 
 ## Optional toolhead sensor
 
