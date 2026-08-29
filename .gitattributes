@@ -1,4 +1,10 @@
+# Shell scripts / init files must stay LF. Windows CRLF breaks BusyBox
+# shebangs on COSMOS ("/etc/init.d/...: not found" after install).
 *.sh text eol=lf
 *.py text eol=lf
 *.cfg text eol=lf
 *.conf text eol=lf
+install.sh text eol=lf
+uninstall.sh text eol=lf
+files/ace-keepalive-init text eol=lf
+files/webui-loader/cosmoace-webui-init text eol=lf
