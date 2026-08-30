@@ -3,8 +3,10 @@
  * A spool tile per slot (color + material) for each configured ACE, a
  * dryer section per unit with a drying
  * toggle (uses the addon's configured dry_temp_c/dry_minutes defaults)
- * plus custom temp/time, and a slot editor with a color wheel for
- * manual (non-RFID) spools. Ported from the CosmosWeb ACE component.
+ * plus custom temp/time, an ACE bypass toggle for manual spool prints
+ * (ACE_SET_BYPASS → stock LOAD_FILAMENT / PRINT_START), and a slot editor
+ * with a color wheel for manual (non-RFID) spools. Ported from the
+ * CosmosWeb ACE component.
  *
  * Talks to the ace-addon CLI through RUN_SHELL_COMMAND CMD=ace_rpc; the
  * CLI prints JSON to the gcode console, which is read back from
@@ -34,6 +36,7 @@
     // online: this data was just queried. false + populated aces = last known
     // state from the db cache, shown read-only.
     var online = false
+    var bypass = 0  // ACE_SET_BYPASS / _ACE_CONFIG.bypass
     var lastFull = 0   // last real (gcode) query, for the slow idle re-poll
     var dryDefaults = { t: 45, m: 240 } // from ace-addon.conf via status
     var slotCfgs = {} // manual slot info from the moonraker db
@@ -246,14 +249,16 @@
         })
     }
 
-    // active slot + print state, for highlighting and the printing lock
+    // active slot + print state + ACE bypass, for highlighting and locks
     function queryPrinter(ctx) {
         return ctx.apiGet(
-            '/printer/objects/query?gcode_macro%20_ACE_STATE&print_stats'
+            '/printer/objects/query?gcode_macro%20_ACE_STATE&gcode_macro%20_ACE_CONFIG&print_stats'
         ).then(function (r) {
             var st = r.result.status || {}
             cur = (st['gcode_macro _ACE_STATE'] || {}).current_slot
             if (cur == null) cur = -1
+            var cfg = st['gcode_macro _ACE_CONFIG'] || {}
+            bypass = cfg.bypass|0
             printing = ['printing', 'paused'].indexOf(
                 (st.print_stats || {}).state) >= 0
         }).catch(function () { /* klippy not ready */ })
@@ -523,6 +528,8 @@
 
                 var chip = printing
                     ? '<span class="cosmoace-chip print">printing</span>'
+                    : bypass
+                        ? '<span class="cosmoace-chip">bypass</span>'
                     : '<span class="cosmoace-chip ' + (online && ace ? 'ok' : '') + '">' +
                       (online && ace ? esc(ace.status || 'ready') : busy ? '…' : 'offline') +
                       '</span>'
@@ -589,6 +596,24 @@
                         (drying ? 'Stop drying' : 'Start drying') + '"></button>' +
                         '</div></div>'
                 }
+
+                // ACE bypass is global (one virtual switch for all units), so
+                // it gets its own section after the per-unit dryers.
+                html +=
+                    '<div class="cosmoace-dryer">' +
+                    '<div class="cosmoace-dtitle">ACE bypass ' +
+                    (bypass ? '<b>on</b> — manual spool' : '— off') + '</div>' +
+                    '<div class="cosmoace-row">' +
+                    '<span style="font-size:.78rem">Bypass</span>' +
+                    '<button data-bypasstgl class="cosmoace-tgl' + (bypass ? ' on' : '') + '"' +
+                    (printing ? ' disabled' : '') +
+                    ' title="' + (bypass
+                        ? 'Bypass on — hub ignored; toolhead runout still active if fitted'
+                        : 'Bypass off — CosmoACE active (click for manual spool)') +
+                    '"></button>' +
+                    '<span class="cosmoace-note" style="margin:0">' +
+                    (bypass ? 'hub ignored / manual spool' : 'ACE macros active') +
+                    '</span></div></div>'
                 body.innerHTML = html
 
                 if (!printing)
@@ -619,6 +644,23 @@
                         tgl.disabled = true
                     }
                 })
+                var bypassTgl = body.querySelector('[data-bypasstgl]')
+                if (bypassTgl && !printing) {
+                    bypassTgl.onclick = function () {
+                        var next = bypass ? 0 : 1
+                        bypassTgl.disabled = true
+                        bypassTgl.classList.toggle('on', !!next)
+                        ctx.gcode('ACE_SET_BYPASS ENABLE=' + next)
+                            .then(function () {
+                                bypass = next
+                                renderFn && renderFn()
+                            })
+                            .catch(function () {
+                                bypassTgl.classList.toggle('on', !!bypass)
+                                bypassTgl.disabled = false
+                            })
+                    }
+                }
             }
 
             // light poll: printing state + active slot, plus a db read so
@@ -639,7 +681,7 @@
                         return
                     }
                     readDb(ctx).then(function () {
-                        var s = JSON.stringify(aces) + '|' + printing + '|' + cur + '|' + online
+                        var s = JSON.stringify(aces) + '|' + printing + '|' + cur + '|' + online + '|' + bypass
                         if (s !== lastPoll) {
                             lastPoll = s
                             renderFn && renderFn()

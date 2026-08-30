@@ -520,14 +520,16 @@
     }
 
     function loadPanels() {
-        fetch('/addons/manifest.json')
+        // Bust browser/SW caches when panel.js is updated on the printer.
+        fetch('/addons/manifest.json?_=' + Date.now())
             .then(function (r) {
                 return r.json()
             })
             .then(function (manifest) {
                 ;(manifest.panels || []).forEach(function (p) {
                     var s = document.createElement('script')
-                    s.src = p.script
+                    s.src = p.script + (p.script.indexOf('?') >= 0 ? '&' : '?') +
+                        '_=' + Date.now()
                     s.onerror = function () {
                         console.error('[panel-extender] failed to load', p.script)
                     }
