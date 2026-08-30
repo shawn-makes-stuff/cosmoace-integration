@@ -45,11 +45,20 @@ if [ -f "$MACROS_CFG" ]; then
 fi
 
 # Optional toolhead sensor: remove the opt-in include and the staged file.
-if [ -f "$PRINTER_CFG" ] && grep -q '^\[include ace_toolhead\.cfg\][[:space:]]*$' "$PRINTER_CFG"; then
+# Tolerate hand-written spacing, and never delete the file while any include
+# still references it - Klipper refuses to start on a missing include.
+TOOLHEAD_INCLUDE_RE='^[[:space:]]*\[include[[:space:]][[:space:]]*ace_toolhead\.cfg\][[:space:]]*$'
+if [ -f "$PRINTER_CFG" ] && grep -q "$TOOLHEAD_INCLUDE_RE" "$PRINTER_CFG"; then
     echo "Removing ace_toolhead.cfg include from printer.cfg..."
-    sed -i '/^\[include ace_toolhead\.cfg\][[:space:]]*$/d' "$PRINTER_CFG"
+    sed -i "/${TOOLHEAD_INCLUDE_RE}/d" "$PRINTER_CFG"
 fi
-rm -f "${KLIPPER_CONFIG_DIR}/ace_toolhead.cfg"
+if [ -f "$PRINTER_CFG" ] && grep -q 'ace_toolhead\.cfg' "$PRINTER_CFG"; then
+    echo "WARNING: printer.cfg still references ace_toolhead.cfg in a form this script"
+    echo "does not recognize; keeping ${KLIPPER_CONFIG_DIR}/ace_toolhead.cfg so Klipper can start."
+    echo "Remove the include and the file by hand."
+else
+    rm -f "${KLIPPER_CONFIG_DIR}/ace_toolhead.cfg"
+fi
 
 echo "Removing ${ADDON_DIR}..."
 rm -rf "$ADDON_DIR"

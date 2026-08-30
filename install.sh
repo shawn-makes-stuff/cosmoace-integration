@@ -152,7 +152,20 @@ chmod 0644 "$MACROS_CFG"
 # file is inert, so this is a no-op until the user adds the include line
 # themselves. That keeps the opt-in reversible without a reinstall, and keeps
 # reinstalls from resetting the choice.
-cp "${SCRIPT_DIR}/files/ace_toolhead.cfg" "$TOOLHEAD_CFG"
+# Back up an edited copy before replacing it: switch_pin lives here, and
+# silently reverting a user's pin would leave the sensor reading clear forever.
+if [ -f "$TOOLHEAD_CFG" ]; then
+    if [ "$(md5sum < "${SCRIPT_DIR}/files/ace_toolhead.cfg")" = "$(md5sum < "$TOOLHEAD_CFG")" ]; then
+        echo "Toolhead sensor config already up to date."
+    else
+        echo "Backing up existing toolhead config to ${BACKUP_DIR}/ace_toolhead-${STAMP}.cfg"
+        echo "NOTE: re-apply your edits (e.g. switch_pin) to the new ${TOOLHEAD_CFG}."
+        cp "$TOOLHEAD_CFG" "${BACKUP_DIR}/ace_toolhead-${STAMP}.cfg"
+        cp "${SCRIPT_DIR}/files/ace_toolhead.cfg" "$TOOLHEAD_CFG"
+    fi
+else
+    cp "${SCRIPT_DIR}/files/ace_toolhead.cfg" "$TOOLHEAD_CFG"
+fi
 chmod 0644 "$TOOLHEAD_CFG"
 
 # Wire the macros into printer.cfg. The include must sit before any
