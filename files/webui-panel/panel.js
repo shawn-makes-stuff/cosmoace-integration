@@ -538,18 +538,6 @@
                     (cur >= 1 ? '<span class="cosmoace-note" style="margin:0">active: slot ' + cur + '</span>' : '') +
                     (busy ? '<span class="cosmoace-note" style="margin:0">refreshing…</span>' : '') +
                     '</div>' +
-                    '<div class="cosmoace-dryer" style="border-top:none;padding-top:0;margin-top:0;margin-bottom:10px">' +
-                    '<div class="cosmoace-row">' +
-                    '<span style="font-size:.78rem">ACE bypass</span>' +
-                    '<button data-bypasstgl class="cosmoace-tgl' + (bypass ? ' on' : '') + '"' +
-                    (printing ? ' disabled' : '') +
-                    ' title="' + (bypass
-                        ? 'Bypass on — hub ignored; toolhead runout still active if fitted'
-                        : 'Bypass off — CosmoACE active (click for manual spool)') +
-                    '"></button>' +
-                    '<span class="cosmoace-note" style="margin:0">' +
-                    (bypass ? 'hub ignored / manual spool' : 'ACE macros active') +
-                    '</span></div></div>' +
                     (printing
                         ? '<p class="cosmoace-note">A print is running — controls are ' +
                           'locked until it finishes.</p>'
@@ -608,6 +596,24 @@
                         (drying ? 'Stop drying' : 'Start drying') + '"></button>' +
                         '</div></div>'
                 }
+
+                // ACE bypass is global (one virtual switch for all units), so
+                // it gets its own section after the per-unit dryers.
+                html +=
+                    '<div class="cosmoace-dryer">' +
+                    '<div class="cosmoace-dtitle">ACE bypass ' +
+                    (bypass ? '<b>on</b> — manual spool' : '— off') + '</div>' +
+                    '<div class="cosmoace-row">' +
+                    '<span style="font-size:.78rem">Bypass</span>' +
+                    '<button data-bypasstgl class="cosmoace-tgl' + (bypass ? ' on' : '') + '"' +
+                    (printing ? ' disabled' : '') +
+                    ' title="' + (bypass
+                        ? 'Bypass on — hub ignored; toolhead runout still active if fitted'
+                        : 'Bypass off — CosmoACE active (click for manual spool)') +
+                    '"></button>' +
+                    '<span class="cosmoace-note" style="margin:0">' +
+                    (bypass ? 'hub ignored / manual spool' : 'ACE macros active') +
+                    '</span></div></div>'
                 body.innerHTML = html
 
                 if (!printing)
