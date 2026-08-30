@@ -28,7 +28,7 @@ for svc in ace-keepalive cosmoace-daemon; do
         rm -f "/etc/init.d/${svc}" /etc/rc*.d/S*"${svc}"
     fi
 done
-rm -f /var/run/ace-keepalive.pid /var/run/cosmoace.sock /var/run/cosmoace-daemon.pid
+rm -f /var/run/ace-keepalive.pid /var/run/ace-keepalive.lock /var/run/cosmoace.sock /var/run/cosmoace-daemon.pid
 
 # Legacy service and symlink from older CosmoACE versions.
 if [ -f /etc/init.d/ace-addon ]; then

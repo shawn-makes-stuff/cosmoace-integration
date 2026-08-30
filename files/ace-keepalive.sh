@@ -17,6 +17,14 @@
 # the middle of a frame. If a command holds the port, this tick is skipped
 # (that command is feeding the watchdog itself anyway).
 
+# One process only. Reinstall used to stack extra /bin/sh copies because
+# the init pidfile could not tell this loop from any other shell.
+LOCKFILE="${ACE_KEEPALIVE_LOCK:-/var/run/ace-keepalive.lock}"
+PIDFILE="${ACE_KEEPALIVE_PID:-/var/run/ace-keepalive.pid}"
+exec 9>"$LOCKFILE"
+flock -n 9 || exit 0
+echo $$ > "$PIDFILE"
+
 INTERVAL="${ACE_KEEPALIVE_INTERVAL:-2}"
 BAUD=115200
 
