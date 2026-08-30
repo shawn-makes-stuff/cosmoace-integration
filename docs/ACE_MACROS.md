@@ -51,7 +51,7 @@ Edit these in `/etc/klipper/config/ace-addon.cfg`.
 | `ACE_LOAD` | Full manual load of a slot: sensor → printhead → sync → purge → wipe. Leaves ACE feed assist on for the slot. | `SLOT`, opt. `TEMP`, `PURGE` |
 | `ACE_UNLOAD` | Full manual unload: stop feed assist, cut, one completed retract back to the slot (respools), verify sensor clear. Heats if needed. | opt. `SLOT` |
 | `ACE_LOAD_TO_SENSOR` | Feed a slot until the sensor triggers. | `SLOT` |
-| `ACE_LOAD_TO_PRINTHEAD` | Push the pending slot from the hub sensor to the printhead. With a toolhead sensor fitted this delegates to `ACE_LOAD_TO_TOOLHEAD` and `LENGTH` is ignored. | opt. `SLOT`, `LENGTH` |
+| `ACE_LOAD_TO_PRINTHEAD` | Push the pending slot from the hub sensor to the printhead. With a toolhead sensor fitted a plain call delegates to `ACE_LOAD_TO_TOOLHEAD`; passing an explicit `LENGTH` always does the manual blind push (tuning nudges). | opt. `SLOT`, `LENGTH` |
 | `ACE_LOAD_TO_TOOLHEAD` | Feed from the hub sensor until the toolhead sensor triggers, then seat past it. Defined in `ace_toolhead.cfg`, so it only exists when that file is included — a hub-only printer never sees it in the macro list. | opt. `SLOT`, `SENSOR`, `SEARCH`, `PAST`, `SPEED` |
 | `ACE_UNLOAD_TO_SENSOR` | Retract until the sensor clears. | opt. `SLOT` |
 | `ACE_CLEAR_HUB` | Retract past the sensor until the hub path is confirmed clear. | opt. `SLOT` |
