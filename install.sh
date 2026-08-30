@@ -13,7 +13,8 @@ INCLUDE_LINE="[include ace-addon.cfg]"
 SAVE_CONFIG_MARKER='^#\*# <-* SAVE_CONFIG -*>'
 STAMP="$(date +%Y%m%d_%H%M%S)"
 
-required_files="files/ace-addon.py files/ace-addon.conf files/ace-command.sh files/ace_macros.cfg files/ace-keepalive.sh files/ace-keepalive-init"
+required_files="files/ace-addon.py files/ace-addon.conf files/ace-command.sh files/ace_macros.cfg files/ace_toolhead.cfg files/ace-keepalive.sh files/ace-keepalive-init"
+TOOLHEAD_CFG="${KLIPPER_CONFIG_DIR}/ace_toolhead.cfg"
 
 fail() {
     echo "ERROR: $1" >&2
@@ -66,8 +67,6 @@ fi
 # 2s, because the ACE drops its USB link ~3.5s after the last frame and that
 # would clear feed assist mid-print. Commands still talk to the ACE directly.
 echo "Installing ACE keep-alive service..."
-cp "${SCRIPT_DIR}/files/ace-keepalive.sh" "${ADDON_DIR}/ace-keepalive.sh"
-chmod 0755 "${ADDON_DIR}/ace-keepalive.sh"
 cp "${SCRIPT_DIR}/files/ace-keepalive-init" /etc/init.d/ace-keepalive
 # Strip CR so a CRLF source tree (Windows scp/USB) can't break BusyBox's shebang.
 sed -i 's/\r$//' /etc/init.d/ace-keepalive
@@ -75,12 +74,18 @@ chmod 0755 /etc/init.d/ace-keepalive
 for rl in 2 3 4 5; do
     [ -d "/etc/rc${rl}.d" ] && ln -sf ../init.d/ace-keepalive "/etc/rc${rl}.d/S98ace-keepalive"
 done
+# Reap every leftover loop before replacing the script. Older init only
+# killed the pidfile process, so reinstall stacked extra /bin/sh copies.
+/etc/init.d/ace-keepalive stop 2>/dev/null || true
+cp "${SCRIPT_DIR}/files/ace-keepalive.sh" "${ADDON_DIR}/ace-keepalive.sh"
+sed -i 's/\r$//' "${ADDON_DIR}/ace-keepalive.sh"
+chmod 0755 "${ADDON_DIR}/ace-keepalive.sh"
 # Remove the daemon this replaces, if an older install left it behind.
 if [ -f /etc/init.d/cosmoace-daemon ]; then
     /etc/init.d/cosmoace-daemon stop 2>/dev/null || true
     rm -f /etc/init.d/cosmoace-daemon /etc/rc*.d/S*cosmoace-daemon /var/run/cosmoace.sock
 fi
-/etc/init.d/ace-keepalive restart
+/etc/init.d/ace-keepalive start
 
 # Mainsail dashboard panel. On COSMOS builds that ship the Mainsail Panel
 # Extender, installing the panel file is all that's needed. On builds
@@ -147,6 +152,26 @@ else
 fi
 chmod 0644 "$MACROS_CFG"
 
+# Optional toolhead sensor hardware. Staged but never included: an un-included
+# file is inert, so this is a no-op until the user adds the include line
+# themselves. That keeps the opt-in reversible without a reinstall, and keeps
+# reinstalls from resetting the choice.
+# Back up an edited copy before replacing it: switch_pin lives here, and
+# silently reverting a user's pin would leave the sensor reading clear forever.
+if [ -f "$TOOLHEAD_CFG" ]; then
+    if [ "$(md5sum < "${SCRIPT_DIR}/files/ace_toolhead.cfg")" = "$(md5sum < "$TOOLHEAD_CFG")" ]; then
+        echo "Toolhead sensor config already up to date."
+    else
+        echo "Backing up existing toolhead config to ${BACKUP_DIR}/ace_toolhead-${STAMP}.cfg"
+        echo "NOTE: re-apply your edits (e.g. switch_pin) to the new ${TOOLHEAD_CFG}."
+        cp "$TOOLHEAD_CFG" "${BACKUP_DIR}/ace_toolhead-${STAMP}.cfg"
+        cp "${SCRIPT_DIR}/files/ace_toolhead.cfg" "$TOOLHEAD_CFG"
+    fi
+else
+    cp "${SCRIPT_DIR}/files/ace_toolhead.cfg" "$TOOLHEAD_CFG"
+fi
+chmod 0644 "$TOOLHEAD_CFG"
+
 # Wire the macros into printer.cfg. The include must sit before any
 # SAVE_CONFIG autosave block, which has to stay at the end of the file.
 if grep -q '^\[include ace-addon\.cfg\]' "$PRINTER_CFG"; then
@@ -172,5 +197,10 @@ echo "  Addon config:    ${ADDON_DIR}/ace-addon.conf"
 echo "  Editable macros: ${MACROS_CFG}"
 echo "  Keep-alive:      /etc/init.d/ace-keepalive (status|restart)"
 echo "Tune variable_load_to_printhead_mm in ${MACROS_CFG} for your setup."
+if grep -q '^\[include ace_toolhead\.cfg\]' "$PRINTER_CFG"; then
+    echo "Toolhead sensor: ENABLED (printer.cfg includes ${TOOLHEAD_CFG})."
+else
+    echo "Toolhead sensor: optional. Add [include ace_toolhead.cfg] to printer.cfg and RESTART to enable."
+fi
 echo "A second chained ACE is auto-detected as slots 5-8 (T4-T7) - no config."
 echo "After a COSMOS factory reset, re-run this installer (files in /user-resource survive; /etc does not)."

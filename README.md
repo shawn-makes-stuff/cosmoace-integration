@@ -131,6 +131,22 @@ sh /user-resource/cosmoace-integration/install.sh
 If your `scp` rejects `-O` as an unknown option, it is an older client that
 already uses the classic protocol — just omit the flag.
 
+### Optional: toolhead filament sensor
+
+If you have a toolhead sensor at the extruder inlet (Canvas / CC1), the
+installer already staged `/etc/klipper/config/ace_toolhead.cfg` for you — it is
+inert until included. Add one line to `printer.cfg` above the `SAVE_CONFIG`
+block and `RESTART`:
+
+```ini
+[include ace_toolhead.cfg]
+```
+
+Loads then stop on the toolhead switch instead of the blind
+`load_to_printhead_mm` push. Hub staging is unchanged. Delete the line and
+`RESTART` to go back — no reinstall either way, and your macro tuning is never
+touched. Details in [docs/ACE_MACROS.md](docs/ACE_MACROS.md#optional-toolhead-sensor).
+
 The installer is idempotent — re-run it any time. It:
 - copies the CLI tool, keep-alive script and config to `/user-resource/ace-addon/`
 - installs the keep-alive service (`/etc/init.d/ace-keepalive`, started at boot)
@@ -140,6 +156,7 @@ The installer is idempotent — re-run it any time. It:
   entry point from `/etc/webui` through Moonraker's existing static serving —
   no system files are modified
 - installs the macro set to `/etc/klipper/config/ace-addon.cfg`
+- stages the optional `/etc/klipper/config/ace_toolhead.cfg` without including it
 - adds `[include ace-addon.cfg]` to `printer.cfg`
 - removes the older long-running daemon service, if a previous version left one
 - restarts Klipper

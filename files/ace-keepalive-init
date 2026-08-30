@@ -15,23 +15,75 @@
 
 SCRIPT=/user-resource/ace-addon/ace-keepalive.sh
 PIDFILE=/var/run/ace-keepalive.pid
+LOCKFILE=/var/run/ace-keepalive.lock
+
+# start-stop-daemon -x /bin/sh cannot uniquely identify this loop, so the
+# pidfile copy is not enough: a reinstall/restart used to leave extras.
+kill_all_keepalive() {
+    if [ -f "$PIDFILE" ]; then
+        pid=$(cat "$PIDFILE" 2>/dev/null || true)
+        if [ -n "$pid" ]; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    fi
+    start-stop-daemon -K -p "$PIDFILE" 2>/dev/null || true
+    for d in /proc/[0-9]*; do
+        pid=${d#/proc/}
+        [ -r "$d/cmdline" ] || continue
+        case "$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null || true)" in
+            *ace-keepalive.sh*)
+                kill "$pid" 2>/dev/null || true
+                ;;
+        esac
+    done
+    rm -f "$PIDFILE" "$LOCKFILE"
+}
+
+is_running() {
+    [ -f "$PIDFILE" ] || return 1
+    pid=$(cat "$PIDFILE" 2>/dev/null || true)
+    [ -n "$pid" ] && [ -d "/proc/$pid" ] || return 1
+    case "$(tr '\0' ' ' < /proc/$pid/cmdline 2>/dev/null || true)" in
+        *ace-keepalive.sh*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 case "$1" in
     start)
         [ -x "$SCRIPT" ] || exit 0
+        keep=""
+        if is_running; then
+            keep=$(cat "$PIDFILE")
+        fi
+        for d in /proc/[0-9]*; do
+            pid=${d#/proc/}
+            [ "$pid" = "$keep" ] && continue
+            [ -r "$d/cmdline" ] || continue
+            case "$(tr '\0' ' ' < "$d/cmdline" 2>/dev/null || true)" in
+                *ace-keepalive.sh*)
+                    kill "$pid" 2>/dev/null || true
+                    ;;
+            esac
+        done
+        if is_running; then
+            echo "ace-keepalive already running (pid $(cat "$PIDFILE"))"
+            exit 0
+        fi
+        kill_all_keepalive
         start-stop-daemon -S -b -m -p "$PIDFILE" -x /bin/sh -- "$SCRIPT"
         ;;
     stop)
-        start-stop-daemon -K -p "$PIDFILE" 2>/dev/null || true
-        rm -f "$PIDFILE"
+        kill_all_keepalive
         ;;
     restart|force-reload)
-        "$0" stop
+        kill_all_keepalive
         sleep 1
-        "$0" start
+        [ -x "$SCRIPT" ] || exit 0
+        start-stop-daemon -S -b -m -p "$PIDFILE" -x /bin/sh -- "$SCRIPT"
         ;;
     status)
-        if [ -f "$PIDFILE" ] && [ -d "/proc/$(cat "$PIDFILE")" ]; then
+        if is_running; then
             echo "ace-keepalive running (pid $(cat "$PIDFILE"))"
         else
             echo "ace-keepalive not running"
