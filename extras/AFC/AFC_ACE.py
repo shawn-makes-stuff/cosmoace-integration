@@ -1077,12 +1077,15 @@ class afcACE(afcUnit):
         prev = self._last_prep.get(slot)
         if prev is not None and present != prev:
             if present:
-                self._seed_spool_weight(lane)
-                # Fresh physical spool: its RFID tag is ground truth
-                self._apply_rfid(lane, self._slot_info(slot, status), force=True)
-                self._publish_lane(lane)
                 self._tail_pending.discard(lane_name)
                 lane.handle_load_runout(eventtime, True)
+                # After AFC's insert handling, not before: its set_loaded()
+                # resets material/color to defaults when no Spoolman spool is
+                # set (the COSMOS AFC 1.2.1 fork does so even when a color is
+                # already there). A fresh spool's RFID tag is ground truth.
+                self._seed_spool_weight(lane)
+                self._apply_rfid(lane, self._slot_info(slot, status), force=True)
+                self._publish_lane(lane)
             elif lane.tool_loaded:
                 # Spool ran out while loaded: an ungripped tail now spans
                 # slot->nozzle, so an immediate swap could not retract it.
