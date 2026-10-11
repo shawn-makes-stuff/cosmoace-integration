@@ -221,7 +221,13 @@ class AceTransport(threading.Thread):
             try:
                 method, params, result, done, cancelled = self._queue.get(timeout=HEARTBEAT_S)
             except queue.Empty:
-                self._store_status(self._rpc("get_status"))
+                # Nothing may escape here: a dead thread stops the heartbeat
+                # and every later RPC just times out.
+                try:
+                    self._store_status(self._rpc("get_status"))
+                except Exception as exc:
+                    self._disconnect()
+                    logging.debug(f"AFC_ACE: heartbeat raised: {exc}")
                 continue
             result["started"] = True
             if cancelled.is_set():
@@ -234,7 +240,9 @@ class AceTransport(threading.Thread):
                     self._store_status(res)
                 result.update(res)
             except Exception as exc:
-                result.update({"ok": False, "error": f"rpc {method} raised: {exc}"})
+                self._disconnect()
+                result.update({"ok": False, "error": f"rpc {method} raised: {exc}",
+                               "sent": True})
             finally:
                 done.set()
         self._disconnect()
@@ -343,7 +351,14 @@ class AceTransport(threading.Thread):
                     time.sleep(0.7)
                     continue
                 return {"ok": False, "error": self.last_error}
-            response = self._read_matching(req["id"], timeout_s=5.0)
+            try:
+                response = self._read_matching(req["id"], timeout_s=5.0)
+            except Exception as exc:
+                # The ACE dropped off USB mid-read (pyserial raises on a dead
+                # fd). Close it so the next call reopens the new tty; holding
+                # the deleted one leaves the unit unreachable for good.
+                self._disconnect()
+                response = {"ok": False, "error": f"read failed: {exc}"}
             if not response.get("ok"):
                 # The frame went out: the command may be executing
                 response["sent"] = True
