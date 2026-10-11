@@ -113,6 +113,22 @@ any UI's temperature list:
 SET_HEATER_TEMPERATURE HEATER=ace_dryer_ACE_1 TARGET=45
 ```
 
+A dry cycle runs its full duration: `TURN_OFF_HEATERS` (idle timeout, print
+end/cancel macros) does not stop it. Stop it with `AFC_ACE_DRYER_STOP`, M112,
+or — on Kalico — `SET_HEATER_TEMPERATURE ... TARGET=0`. On mainline Klipper
+that last one cannot be told apart from `TURN_OFF_HEATERS`, so use
+`AFC_ACE_DRYER_STOP` there.
+
+## Recovering a lane
+
+`AFC_RESET` hands ACE lanes to the driver, but AFC refuses it earlier whenever
+no lane is tool-loaded. Run the driver's command directly to pull a lane back
+clear of the sensors and park it behind the splitter:
+
+```
+AFC_ACE_RESET UNIT=ACE_1 LANE=lane2
+```
+
 ## Known rough edges
 
 - A second chained ACE works (`optional`/`monitor_only`, commented out in
