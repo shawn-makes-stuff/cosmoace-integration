@@ -74,17 +74,22 @@ Change filament gcode: `T{next_extruder} PURGE_LENGTH={flush_length}`. AFC's
 ## The one number to tune
 
 `afc_bowden_length` in `afc-ace.cfg` — the blind push from the frame sensor to
-the extruder inlet. Sensor → nozzle total is `afc_bowden_length + tool_stn`
-(750mm as shipped: 710 + 40, measured on a Centauri Carbon).
+just short of the extruder gears (810 as shipped: 815mm measured to the gears
+on a Centauri Carbon). `tool_stn` (5) then pushes the last few mm with the
+extruder turning, and the purge pulls the filament on to the nozzle.
+
+To measure yours, push a lane to the gears by hand, then retract it in one long
+`LANE_MOVE` plus short steps until the sensor clears, subtracting ~1mm per
+command (see Known rough edges).
 
 ```
 SET_BOWDEN_LENGTH HUB=ACE_1 LENGTH=+10     # live, effective next load
 ```
 
-Too short and the gears never grab (prints air on layer 1). Too long and you
-get ooze before the purge. The first one wastes a print, so if it comes up
-short, go **up** in ~10mm steps. There is no save command — write the final
-number back into `afc-ace.cfg` by hand.
+Too short and the gears never grab (dry purge, air on layer 1). Too long and
+the ACE shoves filament into stopped gears. Stay a few mm short and let
+`tool_stn` close the gap. There is no save command — write the final number
+back into `afc-ace.cfg` by hand.
 
 Everything else is sensor-referenced: `dist_hub` and the unload lengths are
 caps, not measurements, so they only need to be generous.
@@ -132,6 +137,11 @@ AFC_ACE_RESET UNIT=ACE_1 LANE=lane2
 ```
 
 ## Known rough edges
+
+- Every ACE move command loses about 1mm, whatever its length (measured:
+  10 × 5mm retracts moved ~40mm, one 50mm retract ~50mm). One long move is
+  accurate; a sum of short `LANE_MOVE` steps is not. When measuring by
+  stepping, subtract ~1mm per command.
 
 - A second chained ACE works (`optional`/`monitor_only`, commented out in
   `afc-ace.cfg`) but has had far less use than a single unit.
