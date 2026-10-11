@@ -19,7 +19,7 @@ Assumes you already know how to run AFC.
 | `AFC_ACE.py` | Klipper's extras, via the overlay below |
 | `afc-ace-extras.init` | `/etc/init.d/afc-ace-extras` — mounts that overlay at boot |
 | `afc-ace.cfg` | `/etc/klipper/config/` — the unit, lanes, hub, toolhead |
-| `afc-ace-macros.cfg` | `/etc/klipper/config/` — cutter, purge, print-start prep |
+| `afc-ace-macros.cfg` | `/etc/klipper/config/` — cutter, purge |
 | `install.sh` | run on the printer; does all of the above |
 
 `AFC_ACE.py` is self-contained: it registers its own unit type with AFC's lane
@@ -60,17 +60,16 @@ Start gcode (OrcaSlicer), replacing whatever `PRINT_START` line you have:
 ```
 M400
 PRINT_START EXTRUDER=[nozzle_temperature_initial_layer] BED=[bed_temperature_initial_layer_single] CHAMBER=0 TOOL={initial_extruder}
-AFC_PRINT_PREP TOOL={initial_extruder} PURGE_LENGTH=100 EXTRUDER=[nozzle_temperature_initial_layer]
 ```
 
-`AFC_PRINT_PREP` is the piece worth understanding: it parks over the tray,
-heats there, then either purges the already-loaded tool or starts the change to
-the one the print wants. The purge on the already-loaded path is deliberate —
-after a heat-up the nozzle has oozed and left air behind the tip, so purging
-pulls the filament the rest of the way in with the extruder rather than the ACE
-shoving it, and gets flow going before the first line.
+`TOOL=` is what matters: since 26.08, COSMOS's `PRINT_START` runs
+`T{TOOL}` itself when AFC is loaded, then heats and runs KAMP's `LINE_PURGE`
+beside the part (`adaptive_purge` in `cosmos.conf`). A load purges over the
+tray on its own (AFC's `poop_cmd`); the line purge primes a tool that was
+already loaded. Nothing else is needed in the start gcode.
 
-Leave the toolchange gcode alone; AFC's `T0`–`T3` handle it.
+Change filament gcode: `T{next_extruder} PURGE_LENGTH={flush_length}`. AFC's
+`T0`–`T3` handle the change.
 
 ## The one number to tune
 
