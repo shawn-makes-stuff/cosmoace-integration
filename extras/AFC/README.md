@@ -16,39 +16,42 @@ Assumes you already know how to run AFC.
 
 | File | Goes where |
 |---|---|
-| `AFC_ACE.py` | `/usr/share/klipper/klippy/extras/` |
+| `AFC_ACE.py` | Klipper's extras, via the overlay below |
+| `afc-ace-extras.init` | `/etc/init.d/afc-ace-extras` — mounts that overlay at boot |
 | `afc-ace.cfg` | `/etc/klipper/config/` — the unit, lanes, hub, toolhead |
 | `afc-ace-macros.cfg` | `/etc/klipper/config/` — cutter, purge, print-start prep |
+| `install.sh` | run on the printer; does all of the above |
 
 `AFC_ACE.py` is self-contained: it registers its own unit type with AFC's lane
-gates on import, so **no AFC file needs editing**. Drop it in and restart.
+gates on import, so **no AFC file needs editing**. COSMOS already ships AFC.
 
 ## Install
 
-AFC first, the normal way. Then:
-
-```sh
-# 1. the driver (this path is a writable ext4 mount on COSMOS)
-scp AFC_ACE.py root@printer:/usr/share/klipper/klippy/extras/
-
-# 2. the config
-scp afc-ace.cfg afc-ace-macros.cfg root@printer:/etc/klipper/config/
-```
-
-Then include them from `printer.cfg`, **after** the COSMOS includes so the
-frame-sensor override wins:
+COSMOS (26.09) runs Klipper from a read-only image, so the driver cannot be
+copied into `klippy/extras`. `install.sh` adds a boot script that overlays a
+writable layer from `/data/afc-ace/` onto that folder before Klipper starts,
+puts the driver there, copies the configs and adds the includes to
+`printer.cfg` (after the COSMOS ones, with a backup in `config-backups/`):
 
 ```ini
 [include klipper-readonly/*.cfg]
-[include afc.cfg]              # AFC's own installer wrote this
+[include extras-readonly/afc.cfg]   # COSMOS's own: PREP, BT_* macros
 [include afc-ace.cfg]
 [include afc-ace-macros.cfg]
 ```
 
-Set `serial:` in `afc-ace.cfg` to your unit — `ls -l /dev/serial/by-path/` on
-the printer. Use a by-path name; `/dev/ttyACM*` numbering moves between boots.
+```sh
+scp -r extras/AFC root@printer:/tmp/afc-ace
+ssh root@printer sh /tmp/afc-ace/install.sh
+```
 
-Restart Klipper. `PREP` runs on its own and the lanes should come up populated.
+Re-run it after a COSMOS update. It never overwrites an existing
+`afc-ace.cfg`, which holds your serial path and tuned bowden length. Set
+`serial:` there to your unit — `ls -l /dev/serial/by-path/` on the printer. Use
+a by-path name; `/dev/ttyACM*` numbering moves between boots.
+
+To uninstall: remove the three includes, delete `/etc/init.d/afc-ace-extras`
+and `/etc/rc*.d/S93afc-ace-extras`, and reboot.
 
 ## Slicer
 

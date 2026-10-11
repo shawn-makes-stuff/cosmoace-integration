@@ -1,0 +1,31 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          afc-ace-extras
+# Required-Start:    $local_fs
+# Default-Start:     2 3 4 5
+# Short-Description: Writable layer over Klipper's extras for AFC_ACE.py
+### END INIT INFO
+#
+# COSMOS ships Klipper on a read-only squashfs, so a Klipper extra cannot be
+# copied into klippy/extras. This mounts an overlay there whose writable
+# layer lives on /data (where COSMOS keeps its own /etc overlay). Runs before
+# Klipper (S95). Remove this script and its rc links, then reboot, to undo.
+
+EXTRAS=/usr/share/klipper/klippy/extras
+BASE=/data/afc-ace
+
+case "$1" in
+    start)
+        grep -q " $EXTRAS overlay " /proc/mounts && exit 0
+        mkdir -p "$BASE/extras" "$BASE/work"
+        mount -t overlay overlay \
+            -o "lowerdir=$EXTRAS,upperdir=$BASE/extras,workdir=$BASE/work" "$EXTRAS"
+        ;;
+    stop|restart|status)
+        grep " $EXTRAS overlay " /proc/mounts || echo "not mounted"
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|status}"
+        exit 1
+        ;;
+esac
