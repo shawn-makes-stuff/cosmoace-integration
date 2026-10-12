@@ -8,18 +8,16 @@ PKG="cosmoace-integration-${STAMP}.tar.gz"
 
 mkdir -p "${DIST_DIR}"
 
+# Package files/ and docs/ wholesale rather than enumerating them: the old
+# hand-maintained list drifted out of sync with install.sh's required_files
+# twice (the keep-alive pair, then ace_toolhead.cfg), producing tarballs that
+# died at install with "Missing files/...".
 tar -C "${SCRIPT_DIR}" -czf "${DIST_DIR}/${PKG}" \
+    --exclude='__pycache__' \
     install.sh \
     uninstall.sh \
     README.md \
-    docs/ACE_MACROS.md \
-    docs/ORCA_GCODE.md \
-    files/ace-addon.py \
-    files/ace-addon.conf \
-    files/ace-command.sh \
-    files/ace_macros.cfg \
-    files/webui-panel/panel.js \
-    files/webui-loader/loader.js \
-    files/webui-loader/cosmoace-webui-init \
+    docs \
+    files
 
 echo "Created ${DIST_DIR}/${PKG}"
