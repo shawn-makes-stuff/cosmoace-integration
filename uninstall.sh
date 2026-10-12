@@ -28,7 +28,7 @@ for svc in ace-keepalive cosmoace-daemon; do
         rm -f "/etc/init.d/${svc}" /etc/rc*.d/S*"${svc}"
     fi
 done
-rm -f /var/run/ace-keepalive.pid /var/run/cosmoace.sock /var/run/cosmoace-daemon.pid
+rm -f /var/run/ace-keepalive.pid /var/run/ace-keepalive.lock /var/run/cosmoace.sock /var/run/cosmoace-daemon.pid
 
 # Legacy service and symlink from older CosmoACE versions.
 if [ -f /etc/init.d/ace-addon ]; then
@@ -42,6 +42,22 @@ if [ -f "$MACROS_CFG" ]; then
     echo "Backing up macro config to ${BACKUP_DIR}/ace-addon-uninstall-${STAMP}.cfg"
     cp "$MACROS_CFG" "${BACKUP_DIR}/ace-addon-uninstall-${STAMP}.cfg" || true
     rm -f "$MACROS_CFG"
+fi
+
+# Optional toolhead sensor: remove the opt-in include and the staged file.
+# Tolerate hand-written spacing, and never delete the file while any include
+# still references it - Klipper refuses to start on a missing include.
+TOOLHEAD_INCLUDE_RE='^[[:space:]]*\[include[[:space:]][[:space:]]*ace_toolhead\.cfg\][[:space:]]*$'
+if [ -f "$PRINTER_CFG" ] && grep -q "$TOOLHEAD_INCLUDE_RE" "$PRINTER_CFG"; then
+    echo "Removing ace_toolhead.cfg include from printer.cfg..."
+    sed -i "/${TOOLHEAD_INCLUDE_RE}/d" "$PRINTER_CFG"
+fi
+if [ -f "$PRINTER_CFG" ] && grep -q 'ace_toolhead\.cfg' "$PRINTER_CFG"; then
+    echo "WARNING: printer.cfg still references ace_toolhead.cfg in a form this script"
+    echo "does not recognize; keeping ${KLIPPER_CONFIG_DIR}/ace_toolhead.cfg so Klipper can start."
+    echo "Remove the include and the file by hand."
+else
+    rm -f "${KLIPPER_CONFIG_DIR}/ace_toolhead.cfg"
 fi
 
 echo "Removing ${ADDON_DIR}..."

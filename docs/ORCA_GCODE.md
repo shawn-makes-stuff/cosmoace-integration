@@ -61,6 +61,10 @@ If you move the sensor to a different object, update `variable_sensor_name`
 in `/etc/klipper/config/ace-addon.cfg` (macros) and `sensor_name` in
 `/user-resource/ace-addon/ace-addon.conf` (service).
 
+An optional toolhead sensor at the extruder inlet is supported and off by
+default — see [ACE_MACROS.md](ACE_MACROS.md#optional-toolhead-sensor). It needs
+no slicer change.
+
 ## Why not the stock COSMOS start/end gcode?
 
 The stock `PRINT_START` cancels the print when no filament is detected and
